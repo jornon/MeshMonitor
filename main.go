@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -57,6 +58,25 @@ func main() {
 		}
 	}
 
+	// -------------------------------------------------------------------------
+	// Token prompt — required for server authentication
+	// -------------------------------------------------------------------------
+	if cfg.ServerToken == "" {
+		ui.Prompt("Enter server token (will be saved to config)")
+		scanner := bufio.NewScanner(os.Stdin)
+		scanner.Scan()
+		cfg.ServerToken = strings.TrimSpace(scanner.Text())
+		if cfg.ServerToken == "" {
+			ui.Error("No token provided — cannot authenticate with server.")
+			os.Exit(1)
+		}
+		if err := SaveToken(cfgPath, cfg.ServerToken); err != nil {
+			ui.Warn("Could not save token to config: %v", err)
+		} else {
+			ui.Success("Token saved to %s", cfgPath)
+		}
+	}
+
 	// Open device connection.
 	device, err := NewDevice(connectedPort)
 	if err != nil {
@@ -64,6 +84,22 @@ func main() {
 		os.Exit(1)
 	}
 	defer device.Close()
+
+	// -------------------------------------------------------------------------
+	// Step 6 — Initial device handshake and one-time server registration
+	// -------------------------------------------------------------------------
+	ui.Info("Initialising device...")
+	selfInfo, err := device.Init()
+	if err != nil {
+		ui.Error("Device init failed: %v", err)
+		os.Exit(1)
+	}
+	ui.PrintSelfInfo(selfInfo, device.DevInfo)
+
+	ui.Section("Registering with server")
+	if err := PostDeviceReport(selfInfo, device.DevInfo); err != nil {
+		ui.Warn("Device report: %v", err)
+	}
 
 	// -------------------------------------------------------------------------
 	// Main monitoring loop
@@ -74,10 +110,11 @@ func main() {
 		ui.Section(fmt.Sprintf("Monitoring Cycle %d", cycleNum))
 
 		// -------------------------------------------------------------------
-		// Step 6 — Collect basic device info
+		// Step 7 — Re-initialise device each cycle (refreshes self info,
+		//           syncs clock, discards stale buffers)
 		// -------------------------------------------------------------------
 		ui.Info("Initialising device...")
-		selfInfo, err := device.Init()
+		selfInfo, err = device.Init()
 		if err != nil {
 			ui.Error("Device init failed: %v", err)
 			ui.Warn("Retrying in 10 seconds...")
@@ -86,7 +123,6 @@ func main() {
 			}
 			continue
 		}
-		ui.PrintSelfInfo(selfInfo, device.DevInfo)
 
 		// -------------------------------------------------------------------
 		// Step 7 — Collect contacts; advertise and retry if none found
@@ -117,12 +153,12 @@ func main() {
 		}
 
 		// -------------------------------------------------------------------
-		// Step 8 — POST to server; receive list of repeaters to poll
+		// Step 9 — Fetch repeater list from server
 		// -------------------------------------------------------------------
-		ui.Section("Reporting to server")
-		serverResp, err := PostDeviceReport(selfInfo, contacts)
+		ui.Section("Fetching repeaters")
+		serverResp, err := FetchRepeaters()
 		if err != nil {
-			ui.Warn("Server: %v", err)
+			ui.Warn("Fetch repeaters: %v", err)
 		}
 		if serverResp == nil || len(serverResp.Repeaters) == 0 {
 			ui.Warn("No repeaters to monitor this cycle.")

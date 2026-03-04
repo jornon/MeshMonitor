@@ -1,9 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
 )
+
+var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 // ---------------------------------------------------------------------------
 // Request / Response types
@@ -11,20 +18,16 @@ import (
 
 // DeviceReport is the payload POSTed to the central server.
 type DeviceReport struct {
-	Name      string            `json:"name"`
-	PublicKey string            `json:"public_key"`
-	Lat       float64           `json:"lat"`
-	Lon       float64           `json:"lon"`
-	Contacts  []ContactSnapshot `json:"contacts"`
-}
-
-// ContactSnapshot is a stripped-down view of a contact for the server payload.
-type ContactSnapshot struct {
-	Name      string  `json:"name"`
-	PublicKey string  `json:"public_key"`
-	Type      string  `json:"type"`
-	Lat       float64 `json:"lat"`
-	Lon       float64 `json:"lon"`
+	Name         string  `json:"name"`
+	PublicKey    string  `json:"public_key"`
+	Lat          float64 `json:"lat"`
+	Lon          float64 `json:"lon"`
+	Model        string  `json:"model,omitempty"`
+	Firmware     string  `json:"firmware,omitempty"`
+	RadioFreqKHz uint32  `json:"radio_freq_khz"`
+	RadioBWKHz   uint32  `json:"radio_bw_khz"`
+	RadioSF      uint8   `json:"radio_sf"`
+	RadioCR      uint8   `json:"radio_cr"`
 }
 
 // ServerResponse is returned by the central server with repeaters to poll.
@@ -34,62 +37,96 @@ type ServerResponse struct {
 
 // RepeaterTarget describes a repeater the monitor should collect data from.
 type RepeaterTarget struct {
-	Name      string  `json:"name"`
-	PublicKey string  `json:"public_key"` // hex, 64 chars (32 bytes)
-	Lat       float64 `json:"lat"`
-	Lon       float64 `json:"lon"`
+	Name       string  `json:"name"`
+	PublicKey  string  `json:"public_key"` // hex, 64 chars (32 bytes)
+	DistanceKm float64 `json:"distance_km"`
 }
 
 // ---------------------------------------------------------------------------
-// Mocked server client
+// Server client
 // ---------------------------------------------------------------------------
 
-// PostDeviceReport sends device and contact info to the central server and
-// returns the list of repeaters to poll. Currently MOCKED — no real HTTP call.
-func PostDeviceReport(selfInfo *SelfInfo, contacts []*Contact) (*ServerResponse, error) {
-	// Build request payload.
+// PostDeviceReport sends the device identity and radio configuration to the
+// server. Failure is non-fatal — the monitor can still fetch repeaters.
+func PostDeviceReport(selfInfo *SelfInfo, devInfo *DeviceInfo) error {
 	report := DeviceReport{
-		Name:      selfInfo.Name,
-		PublicKey: selfInfo.PublicKeyHex,
-		Lat:       selfInfo.Lat,
-		Lon:       selfInfo.Lon,
+		Name:         selfInfo.Name,
+		PublicKey:    selfInfo.PublicKeyHex,
+		Lat:          selfInfo.Lat,
+		Lon:          selfInfo.Lon,
+		RadioFreqKHz: selfInfo.RadioFreqKHz,
+		RadioBWKHz:   selfInfo.RadioBWKHz,
+		RadioSF:      selfInfo.RadioSF,
+		RadioCR:      selfInfo.RadioCR,
 	}
-	for _, c := range contacts {
-		report.Contacts = append(report.Contacts, ContactSnapshot{
-			Name:      c.Name,
-			PublicKey: c.PublicKeyHex,
-			Type:      c.TypeName,
-			Lat:       c.Lat,
-			Lon:       c.Lon,
-		})
-	}
-
-	payload, _ := json.MarshalIndent(report, "", "  ")
-	ui.Dimf("[server] POST %s\n", cfg.ServerURL)
-	ui.Dimf("[server] payload:\n%s\n", string(payload))
-
-	// --- MOCK RESPONSE ---
-	// In production this would be an actual HTTP POST.
-	// We derive the repeater list from the contacts we already discovered,
-	// filtering to ADV_TYPE_REPEATER entries.
-	var repeaters []RepeaterTarget
-	for _, c := range contacts {
-		if c.Type == AdvTypeRepeater {
-			repeaters = append(repeaters, RepeaterTarget{
-				Name:      c.Name,
-				PublicKey: c.PublicKeyHex,
-				Lat:       c.Lat,
-				Lon:       c.Lon,
-			})
-		}
+	if devInfo != nil {
+		report.Model = devInfo.Model
+		report.Firmware = devInfo.Version
 	}
 
-	resp := &ServerResponse{Repeaters: repeaters}
-	respJSON, _ := json.MarshalIndent(resp, "", "  ")
-	ui.Dimf("[server] mock response:\n%s\n", string(respJSON))
-
-	if len(repeaters) == 0 {
-		return resp, fmt.Errorf("server returned no repeaters to monitor")
+	body, err := json.Marshal(report)
+	if err != nil {
+		return fmt.Errorf("marshal device report: %w", err)
 	}
-	return resp, nil
+
+	url := strings.TrimRight(cfg.ServerURL, "/") + "/api/v1/device/checkin"
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+cfg.ServerToken)
+
+	ui.Dimf("[server] POST %s\n", url)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("POST device report: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("server returned %s", resp.Status)
+	}
+	return nil
+}
+
+// FetchRepeaters retrieves the list of repeaters this monitor should poll
+// from GET /api/v1/device/repeaters, authenticated with the configured bearer token.
+func FetchRepeaters() (*ServerResponse, error) {
+	if cfg.ServerToken == "" {
+		return nil, fmt.Errorf("server.token is not set in config — cannot authenticate")
+	}
+
+	url := strings.TrimRight(cfg.ServerURL, "/") + "/api/v1/device/repeaters"
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.ServerToken)
+	req.Header.Set("Accept", "application/json")
+
+	ui.Dimf("[server] GET %s\n", url)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("GET repeaters: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, fmt.Errorf("authentication failed (401) — check server.token in config")
+	}
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("server returned %s", resp.Status)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+
+	var serverResp ServerResponse
+	if err := json.Unmarshal(data, &serverResp); err != nil {
+		return nil, fmt.Errorf("parse response: %w", err)
+	}
+	return &serverResp, nil
 }

@@ -29,7 +29,8 @@ type AppConfig struct {
 	PortDetectTimeout      time.Duration
 
 	// [server]
-	ServerURL string
+	ServerURL   string
+	ServerToken string // Bearer token for API authentication
 
 	// [mqtt]
 	MQTTHost        string
@@ -46,7 +47,7 @@ func defaultConfig() *AppConfig {
 		StatusTimeout:       15 * time.Second,
 		TelemetryTimeout:    15 * time.Second,
 		PortDetectTimeout:   60 * time.Second,
-		ServerURL:           "https://meshcore.jorno.org/api/monitor",
+		ServerURL:           "https://meshcore.jorno.org",
 		MQTTHost:            "mqtt.jorno.org",
 		MQTTPort:            1883,
 		MQTTTopicPrefix:     "meshmonitor",
@@ -151,6 +152,8 @@ func applyConfigKey(section, key, val string) {
 
 	case "server.url":
 		cfg.ServerURL = val
+	case "server.token":
+		cfg.ServerToken = val
 
 	case "mqtt.host":
 		cfg.MQTTHost = val
@@ -217,6 +220,52 @@ func SaveSerialPort(path, port string) error {
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0644)
 }
 
+// SaveToken writes the given token into the [server] token key of the config
+// file, creating the file from the default template first if needed.
+func SaveToken(path, token string) error {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		if err := WriteDefaultConfig(path); err != nil {
+			return err
+		}
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read config for update: %w", err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	targetLine := "token = " + token
+	replaced := false
+
+	for i, line := range lines {
+		stripped := strings.TrimLeft(strings.TrimSpace(line), ";# \t")
+		if strings.HasPrefix(stripped, "token") {
+			lines[i] = targetLine
+			replaced = true
+			break
+		}
+	}
+
+	if !replaced {
+		// Insert after the [server] section header.
+		for i, line := range lines {
+			if strings.TrimSpace(line) == "[server]" {
+				rest := make([]string, len(lines)-i-1)
+				copy(rest, lines[i+1:])
+				lines = append(lines[:i+1], append([]string{targetLine}, rest...)...)
+				replaced = true
+				break
+			}
+		}
+	}
+	if !replaced {
+		lines = append(lines, "", "[server]", targetLine)
+	}
+
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0644)
+}
+
 // ---------------------------------------------------------------------------
 // Default template
 // ---------------------------------------------------------------------------
@@ -266,8 +315,11 @@ func defaultConfigTemplate() string {
 ; port_detect_timeout_secs = %.0f
 
 [server]
-; Central server URL for reporting device and contact data
+; Central server base URL
 ; url = %s
+
+; Bearer token for API authentication (required)
+; token =
 
 [mqtt]
 ; MQTT broker hostname
