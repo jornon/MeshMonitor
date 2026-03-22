@@ -32,6 +32,9 @@ func main() {
 	ui.Info("Press Ctrl+C at any time to exit.")
 	fmt.Println()
 
+	// Check serial port permissions before doing anything else.
+	checkDialoutAccess()
+
 	// Trap Ctrl+C for a clean shutdown.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
@@ -58,14 +61,39 @@ func main() {
 		}
 	}
 
+	// Open device connection.
+	device, err := NewDevice(connectedPort)
+	if err != nil {
+		ui.Error("Failed to open %s: %v", connectedPort, err)
+		os.Exit(1)
+	}
+	defer device.Close()
+
+	// -------------------------------------------------------------------------
+	// Step 6 — Initial device handshake
+	// -------------------------------------------------------------------------
+	ui.Info("Initialising device...")
+	selfInfo, err := device.Init()
+	if err != nil {
+		ui.Error("Device init failed: %v", err)
+		os.Exit(1)
+	}
+	ui.PrintSelfInfo(selfInfo, device.DevInfo)
+
 	// -------------------------------------------------------------------------
 	// Token prompt — required for server authentication
 	// -------------------------------------------------------------------------
 	if cfg.ServerToken == "" {
+		fmt.Println()
+		ui.Info("Public key: %s", selfInfo.PublicKeyHex)
+		ui.Info("Use this key to register the device on the dashboard and obtain a token.")
+		fmt.Println()
 		ui.Prompt("Enter server token (will be saved to config)")
-		scanner := bufio.NewScanner(os.Stdin)
-		scanner.Scan()
-		cfg.ServerToken = strings.TrimSpace(scanner.Text())
+		line, ok := readLineOrExit(sigCh)
+		if !ok {
+			return
+		}
+		cfg.ServerToken = strings.TrimSpace(line)
 		if cfg.ServerToken == "" {
 			ui.Error("No token provided — cannot authenticate with server.")
 			os.Exit(1)
@@ -76,25 +104,6 @@ func main() {
 			ui.Success("Token saved to %s", cfgPath)
 		}
 	}
-
-	// Open device connection.
-	device, err := NewDevice(connectedPort)
-	if err != nil {
-		ui.Error("Failed to open %s: %v", connectedPort, err)
-		os.Exit(1)
-	}
-	defer device.Close()
-
-	// -------------------------------------------------------------------------
-	// Step 6 — Initial device handshake and one-time server registration
-	// -------------------------------------------------------------------------
-	ui.Info("Initialising device...")
-	selfInfo, err := device.Init()
-	if err != nil {
-		ui.Error("Device init failed: %v", err)
-		os.Exit(1)
-	}
-	ui.PrintSelfInfo(selfInfo, device.DevInfo)
 
 	ui.Section("Registering with server")
 	if err := PostDeviceReport(selfInfo, device.DevInfo); err != nil {
@@ -232,47 +241,51 @@ func main() {
 // ---------------------------------------------------------------------------
 
 func detectSerialPort(sigCh <-chan os.Signal) string {
-	// Step 2 — Ask the user to disconnect the device first.
-	ui.Prompt("If your MeshCore device is already connected, disconnect it now, then press Enter")
-	waitForEnter()
+	ui.Info("Connect (or reconnect) your MeshCore device to USB...")
+	ui.Info("Waiting for device (up to %s)...", cfg.PortDetectTimeout)
 
-	// Step 3 — Snapshot current ports.
-	ui.Info("Scanning serial ports...")
-	beforePorts, err := ListPorts()
+	port, err := DetectDevice(cfg.PortDetectTimeout, sigCh)
 	if err != nil {
-		ui.Error("Could not list serial ports: %v", err)
-		os.Exit(1)
-	}
-	if len(beforePorts) > 0 {
-		ui.Info("Found %d existing port(s):", len(beforePorts))
-		ui.PrintPorts(beforePorts)
-	} else {
-		ui.Info("No serial ports currently detected.")
-	}
-	fmt.Println()
-
-	// Step 4 — Ask the user to connect the device.
-	ui.Prompt("Connect your MeshCore device to USB, then press Enter")
-	waitForEnter()
-
-	// Step 5 — Detect the newly appeared port.
-	ui.Info("Waiting for new serial port (up to %s)...", cfg.PortDetectTimeout)
-	newPort, err := DetectNewPort(beforePorts, cfg.PortDetectTimeout)
-	if err != nil {
+		if err.Error() == "interrupted" {
+			ui.Info("Shutting down.")
+			return ""
+		}
 		ui.Error("Device not detected: %v", err)
 		os.Exit(1)
 	}
-	ui.Success("Device detected on port: %s", newPort)
-	return newPort
+	ui.Success("Device detected on port: %s", port)
+	return port
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-func waitForEnter() {
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Scan()
+// stdinLines returns a channel that emits one value per line read from stdin.
+// Runs in a background goroutine for the lifetime of the process.
+var stdinLines = func() <-chan string {
+	ch := make(chan string)
+	go func() {
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
+			ch <- scanner.Text()
+		}
+		close(ch)
+	}()
+	return ch
+}()
+
+func readLineOrExit(sigCh <-chan os.Signal) (string, bool) {
+	select {
+	case line, ok := <-stdinLines:
+		if !ok {
+			return "", false
+		}
+		return line, true
+	case <-sigCh:
+		ui.Info("Shutting down.")
+		return "", false
+	}
 }
 
 func sleepOrExit(d time.Duration, sigCh <-chan os.Signal) bool {

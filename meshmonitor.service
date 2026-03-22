@@ -1,0 +1,21 @@
+[Unit]
+Description=MeshMonitor - MeshCore network monitoring tool
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/meshmonitor
+WorkingDirectory=/etc/meshmonitor
+Restart=on-failure
+RestartSec=10
+User=jorn
+Group=dialout
+SupplementaryGroups=tty
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=meshmonitor
+
+[Install]
+WantedBy=multi-user.target
