@@ -2,13 +2,16 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 )
 
 // UI provides simple ANSI-coloured terminal output helpers.
 // All output goes to stdout.
-type UI struct{}
+type UI struct {
+	Verbose bool
+}
 
 var ui = &UI{}
 
@@ -49,7 +52,18 @@ func (u *UI) Error(format string, args ...any) {
 }
 
 func (u *UI) Dimf(format string, args ...any) {
+	if !u.Verbose {
+		return
+	}
 	fmt.Printf("%s%s%s", ansiDim, fmt.Sprintf(format, args...), ansiReset)
+}
+
+// Verb prints info-level output only in verbose mode.
+func (u *UI) Verb(format string, args ...any) {
+	if !u.Verbose {
+		return
+	}
+	fmt.Printf("%s[i]%s %s\n", ansiCyan, ansiReset, fmt.Sprintf(format, args...))
 }
 
 func (u *UI) Section(title string) {
@@ -92,17 +106,23 @@ func (u *UI) PrintSelfInfo(info *SelfInfo, devInfo *DeviceInfo) {
 	}
 }
 
-// PrintContacts displays the contact list in a table.
+// PrintContacts displays repeaters from the contact list in a table.
 func (u *UI) PrintContacts(contacts []*Contact) {
-	u.Section(fmt.Sprintf("Contacts (%d)", len(contacts)))
-	if len(contacts) == 0 {
-		u.Warn("No contacts found.")
+	var repeaters []*Contact
+	for _, c := range contacts {
+		if c.Type == AdvTypeRepeater {
+			repeaters = append(repeaters, c)
+		}
+	}
+	u.Section(fmt.Sprintf("Repeaters (%d of %d contacts)", len(repeaters), len(contacts)))
+	if len(repeaters) == 0 {
+		u.Warn("No repeaters found.")
 		return
 	}
-	fmt.Printf("%s  %-20s  %-10s  %-14s  %s%s\n",
-		ansiDim, "Name", "Type", "Public Key", "Location", ansiReset)
-	fmt.Printf("%s  %s%s\n", ansiDim, strings.Repeat("─", 72), ansiReset)
-	for _, c := range contacts {
+	fmt.Printf("%s  %-20s  %-14s  %s%s\n",
+		ansiDim, "Name", "Public Key", "Location", ansiReset)
+	fmt.Printf("%s  %s%s\n", ansiDim, strings.Repeat("─", 52), ansiReset)
+	for _, c := range repeaters {
 		loc := ""
 		if c.Lat != 0 || c.Lon != 0 {
 			loc = fmt.Sprintf("%.4f,%.4f", c.Lat, c.Lon)
@@ -111,8 +131,8 @@ func (u *UI) PrintContacts(contacts []*Contact) {
 		if len(name) > 20 {
 			name = name[:17] + "..."
 		}
-		fmt.Printf("  %-20s  %-10s  %s...  %s\n",
-			name, c.TypeName, c.PublicKeyHex[:12], loc)
+		fmt.Printf("  %-20s  %s...  %s\n",
+			name, c.PublicKeyHex[:12], loc)
 	}
 }
 
@@ -150,20 +170,26 @@ func (u *UI) PrintTelemetryResult(target RepeaterTarget, t *TelemetryResponse) {
 	)
 }
 
-// Countdown shows a live countdown in-place and blocks until it completes.
-func (u *UI) Countdown(label string, d time.Duration) {
+// Countdown shows a live countdown in-place. Returns false if interrupted by signal.
+func (u *UI) Countdown(label string, d time.Duration, sigCh <-chan os.Signal) bool {
 	end := time.Now().Add(d)
 	for time.Now().Before(end) {
 		remaining := time.Until(end).Truncate(time.Second)
 		fmt.Printf("\r%s[i]%s %s — next cycle in %s   ",
 			ansiCyan, ansiReset, label, remaining)
-		time.Sleep(time.Second)
+		select {
+		case <-sigCh:
+			fmt.Printf("\r%s\r", strings.Repeat(" ", 70))
+			return false
+		case <-time.After(time.Second):
+		}
 	}
 	fmt.Printf("\r%s\r", strings.Repeat(" ", 70)) // clear line
+	return true
 }
 
-// WaitWithSpinner shows a spinning indicator while waiting for d.
-func (u *UI) WaitWithSpinner(label string, d time.Duration) {
+// WaitWithSpinner shows a spinning indicator while waiting for d. Returns false if interrupted.
+func (u *UI) WaitWithSpinner(label string, d time.Duration, sigCh <-chan os.Signal) bool {
 	frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 	end := time.Now().Add(d)
 	i := 0
@@ -171,10 +197,16 @@ func (u *UI) WaitWithSpinner(label string, d time.Duration) {
 		remaining := time.Until(end).Truncate(time.Second)
 		fmt.Printf("\r%s%s%s %s (%s)   ",
 			ansiCyan, frames[i%len(frames)], ansiReset, label, remaining)
-		time.Sleep(100 * time.Millisecond)
+		select {
+		case <-sigCh:
+			fmt.Printf("\r%s\r", strings.Repeat(" ", 70))
+			return false
+		case <-time.After(100 * time.Millisecond):
+		}
 		i++
 	}
 	fmt.Printf("\r%s\r", strings.Repeat(" ", 70))
+	return true
 }
 
 func formatDuration(d time.Duration) string {

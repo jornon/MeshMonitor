@@ -2,6 +2,9 @@ package main
 
 import "time"
 
+// Version is set at build time via -ldflags.
+var Version = "dev"
+
 const (
 	// Application identity — not user-configurable.
 	AppName         = "MeshMonitor"

@@ -266,6 +266,52 @@ func SaveToken(path, token string) error {
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0644)
 }
 
+// SaveConfigValue writes a key=value pair into the given section of the config
+// file, creating the file from the default template first if needed.
+func SaveConfigValue(path, section, key, value string) error {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		if err := WriteDefaultConfig(path); err != nil {
+			return err
+		}
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read config for update: %w", err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	targetLine := key + " = " + value
+	replaced := false
+
+	for i, line := range lines {
+		stripped := strings.TrimLeft(strings.TrimSpace(line), ";# \t")
+		if strings.HasPrefix(stripped, key+" ") || strings.HasPrefix(stripped, key+"=") {
+			lines[i] = targetLine
+			replaced = true
+			break
+		}
+	}
+
+	if !replaced {
+		sectionHeader := "[" + section + "]"
+		for i, line := range lines {
+			if strings.TrimSpace(line) == sectionHeader {
+				rest := make([]string, len(lines)-i-1)
+				copy(rest, lines[i+1:])
+				lines = append(lines[:i+1], append([]string{targetLine}, rest...)...)
+				replaced = true
+				break
+			}
+		}
+	}
+	if !replaced {
+		lines = append(lines, "", "["+section+"]", targetLine)
+	}
+
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0644)
+}
+
 // ---------------------------------------------------------------------------
 // Default template
 // ---------------------------------------------------------------------------

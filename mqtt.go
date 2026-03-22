@@ -11,31 +11,46 @@ import (
 
 var (
 	mqttClient mqtt.Client
-	mqttOnce   sync.Once
+	mqttMu     sync.Mutex
+	mqttReady  bool
 )
 
-// connectMQTT lazily connects to the broker on the first publish.
-func connectMQTT() error {
-	var connErr error
-	mqttOnce.Do(func() {
-		broker := fmt.Sprintf("tcp://%s:%d", cfg.MQTTHost, cfg.MQTTPort)
-		opts := mqtt.NewClientOptions().
-			AddBroker(broker).
-			SetClientID(fmt.Sprintf("meshmonitor-%d", time.Now().UnixNano()%100000)).
-			SetAutoReconnect(true).
-			SetConnectRetry(true).
-			SetConnectRetryInterval(5 * time.Second)
+// mqttUsername is set at startup from the device config endpoint.
+var mqttUsername string
 
-		mqttClient = mqtt.NewClient(opts)
-		token := mqttClient.Connect()
-		if token.WaitTimeout(10 * time.Second); token.Error() != nil {
-			connErr = fmt.Errorf("mqtt connect: %w", token.Error())
-			mqttOnce = sync.Once{} // allow retry
-			return
-		}
-		ui.Success("MQTT connected to %s", broker)
-	})
-	return connErr
+// connectMQTT connects to the broker, retrying on each call if a previous attempt failed.
+func connectMQTT() error {
+	mqttMu.Lock()
+	defer mqttMu.Unlock()
+
+	if mqttReady {
+		return nil
+	}
+
+	broker := fmt.Sprintf("tcp://%s:%d", cfg.MQTTHost, cfg.MQTTPort)
+	opts := mqtt.NewClientOptions().
+		AddBroker(broker).
+		SetClientID(fmt.Sprintf("meshmonitor-%d", time.Now().UnixNano()%100000)).
+		SetAutoReconnect(true).
+		SetConnectRetry(false)
+
+	if mqttUsername != "" {
+		opts.SetUsername(mqttUsername)
+		opts.SetPassword(cfg.ServerToken)
+	}
+
+	mqttClient = mqtt.NewClient(opts)
+	token := mqttClient.Connect()
+	ok := token.WaitTimeout(10 * time.Second)
+	if !ok {
+		return fmt.Errorf("mqtt connect: timeout connecting to %s", broker)
+	}
+	if token.Error() != nil {
+		return fmt.Errorf("mqtt connect: %w", token.Error())
+	}
+	mqttReady = true
+	ui.Verb("MQTT connected to %s as %s", broker, mqttUsername)
+	return nil
 }
 
 // PublishStatus publishes a repeater status report to the MQTT broker.
@@ -85,10 +100,17 @@ func publish(topic string, payload any) error {
 	if err != nil {
 		return err
 	}
+	broker := fmt.Sprintf("tcp://%s:%d", cfg.MQTTHost, cfg.MQTTPort)
 	token := mqttClient.Publish(topic, 1, false, data)
-	if token.WaitTimeout(5 * time.Second); token.Error() != nil {
+	ok := token.WaitTimeout(5 * time.Second)
+	if token.Error() != nil {
+		ui.Verb("[mqtt] FAIL %s → %s: %v", broker, topic, token.Error())
 		return fmt.Errorf("mqtt publish: %w", token.Error())
 	}
-	ui.Dimf("[mqtt] → %s (%d bytes)\n", topic, len(data))
+	if !ok {
+		ui.Verb("[mqtt] FAIL %s → %s: timeout (not delivered)", broker, topic)
+		return fmt.Errorf("mqtt publish timeout for %s", topic)
+	}
+	ui.Verb("[mqtt] OK %s → %s (%d bytes)", broker, topic, len(data))
 	return nil
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/hex"
+	"flag"
 	"fmt"
 	"math/rand"
 	"os"
@@ -13,6 +14,10 @@ import (
 )
 
 func main() {
+	verbose := flag.Bool("v", false, "verbose output")
+	flag.Parse()
+	ui.Verbose = *verbose
+
 	// -------------------------------------------------------------------------
 	// Step 1 — Load config, write default template on first run, print banner
 	// -------------------------------------------------------------------------
@@ -26,11 +31,15 @@ func main() {
 		fmt.Fprintf(os.Stderr, "warning: could not write default config: %v\n", err)
 	}
 
-	ui.Banner()
-	ui.Info("MeshMonitor — MeshCore network monitoring tool")
-	ui.Info("Config file: %s", cfgPath)
-	ui.Info("Press Ctrl+C at any time to exit.")
-	fmt.Println()
+	if ui.Verbose {
+		ui.Banner()
+	}
+	ui.Info("MeshMonitor %s — MeshCore network monitoring tool", Version)
+	ui.Verb("Config file: %s", cfgPath)
+	ui.Verb("Press Ctrl+C at any time to exit.")
+	if ui.Verbose {
+		fmt.Println()
+	}
 
 	// Check serial port permissions before doing anything else.
 	checkDialoutAccess()
@@ -46,7 +55,7 @@ func main() {
 	var connectedPort string
 
 	if cfg.SerialPort != "" {
-		ui.Info("Using configured serial port: %s", cfg.SerialPort)
+		ui.Verb("Using configured serial port: %s", cfg.SerialPort)
 		connectedPort = cfg.SerialPort
 	} else {
 		connectedPort = detectSerialPort(sigCh)
@@ -72,22 +81,67 @@ func main() {
 	// -------------------------------------------------------------------------
 	// Step 6 — Initial device handshake
 	// -------------------------------------------------------------------------
-	ui.Info("Initialising device...")
+	ui.Verb("Initialising device...")
 	selfInfo, err := device.Init()
 	if err != nil {
 		ui.Error("Device init failed: %v", err)
 		os.Exit(1)
 	}
-	ui.PrintSelfInfo(selfInfo, device.DevInfo)
+	if ui.Verbose {
+		ui.PrintSelfInfo(selfInfo, device.DevInfo)
+	}
 
 	// -------------------------------------------------------------------------
-	// Token prompt — required for server authentication
+	// First-run setup — server, MQTT, and token configuration
 	// -------------------------------------------------------------------------
 	if cfg.ServerToken == "" {
 		fmt.Println()
 		ui.Info("Public key: %s", selfInfo.PublicKeyHex)
 		ui.Info("Use this key to register the device on the dashboard and obtain a token.")
 		fmt.Println()
+
+		// Server URL
+		val, ok := promptWithDefault("Server URL", cfg.ServerURL, sigCh)
+		if !ok {
+			return
+		}
+		if val != cfg.ServerURL {
+			cfg.ServerURL = val
+			if err := SaveConfigValue(cfgPath, "server", "url", val); err != nil {
+				ui.Warn("Could not save server URL: %v", err)
+			}
+		}
+
+		// MQTT host
+		val, ok = promptWithDefault("MQTT host", cfg.MQTTHost, sigCh)
+		if !ok {
+			return
+		}
+		if val != cfg.MQTTHost {
+			cfg.MQTTHost = val
+			if err := SaveConfigValue(cfgPath, "mqtt", "host", val); err != nil {
+				ui.Warn("Could not save MQTT host: %v", err)
+			}
+		}
+
+		// MQTT port
+		val, ok = promptWithDefault("MQTT port", fmt.Sprintf("%d", cfg.MQTTPort), sigCh)
+		if !ok {
+			return
+		}
+		if p, pErr := fmt.Sscanf(val, "%d", &cfg.MQTTPort); pErr != nil || p != 1 {
+			ui.Warn("Invalid port, using default %d", cfg.MQTTPort)
+		} else {
+			if val != fmt.Sprintf("%d", defaultConfig().MQTTPort) {
+				if err := SaveConfigValue(cfgPath, "mqtt", "port", val); err != nil {
+					ui.Warn("Could not save MQTT port: %v", err)
+				}
+			}
+		}
+
+		fmt.Println()
+
+		// Token
 		ui.Prompt("Enter server token (will be saved to config)")
 		line, ok := readLineOrExit(sigCh)
 		if !ok {
@@ -105,9 +159,20 @@ func main() {
 		}
 	}
 
-	ui.Section("Registering with server")
+	if ui.Verbose {
+		ui.Section("Registering with server")
+	}
 	if err := PostDeviceReport(selfInfo, device.DevInfo); err != nil {
 		ui.Warn("Device report: %v", err)
+	}
+
+	// Fetch device config for MQTT credentials.
+	devCfg, err := FetchDeviceConfig()
+	if err != nil {
+		ui.Warn("Could not fetch device config: %v", err)
+	} else if devCfg.MQTT.Username != "" {
+		mqttUsername = devCfg.MQTT.Username
+		ui.Verb("MQTT username: %s", mqttUsername)
 	}
 
 	// -------------------------------------------------------------------------
@@ -116,13 +181,17 @@ func main() {
 	cycleNum := 0
 	for {
 		cycleNum++
-		ui.Section(fmt.Sprintf("Monitoring Cycle %d", cycleNum))
+		if ui.Verbose {
+			ui.Section(fmt.Sprintf("Monitoring Cycle %d", cycleNum))
+		} else {
+			ui.Info("Cycle %d", cycleNum)
+		}
 
 		// -------------------------------------------------------------------
 		// Step 7 — Re-initialise device each cycle (refreshes self info,
 		//           syncs clock, discards stale buffers)
 		// -------------------------------------------------------------------
-		ui.Info("Initialising device...")
+		ui.Verb("Initialising device...")
 		selfInfo, err = device.Init()
 		if err != nil {
 			ui.Error("Device init failed: %v", err)
@@ -138,33 +207,34 @@ func main() {
 		// -------------------------------------------------------------------
 		var contacts []*Contact
 		for attempt := 1; ; attempt++ {
-			ui.Info("Fetching contacts (attempt %d)...", attempt)
+			ui.Verb("Fetching contacts (attempt %d)...", attempt)
 			contacts, err = device.GetContacts()
 			if err != nil {
 				ui.Warn("Could not fetch contacts: %v", err)
 			}
 			if len(contacts) > 0 {
-				ui.Success("Found %d contact(s).", len(contacts))
-				ui.PrintContacts(contacts)
+				ui.Verb("Found %d contact(s).", len(contacts))
+				if ui.Verbose {
+					ui.PrintContacts(contacts)
+				}
 				break
 			}
 			ui.Warn("No contacts found. Sending advertisement and waiting %s...", cfg.AdvertWait)
 			if sendErr := device.SendAdvert(); sendErr != nil {
 				ui.Warn("Advert send failed: %v", sendErr)
 			}
-			ui.WaitWithSpinner("Waiting for contacts to appear", cfg.AdvertWait)
-			select {
-			case <-sigCh:
+			if !ui.WaitWithSpinner("Waiting for contacts to appear", cfg.AdvertWait, sigCh) {
 				ui.Info("Shutting down.")
 				return
-			default:
 			}
 		}
 
 		// -------------------------------------------------------------------
 		// Step 9 — Fetch repeater list from server
 		// -------------------------------------------------------------------
-		ui.Section("Fetching repeaters")
+		if ui.Verbose {
+			ui.Section("Fetching repeaters")
+		}
 		serverResp, err := FetchRepeaters()
 		if err != nil {
 			ui.Warn("Fetch repeaters: %v", err)
@@ -176,12 +246,16 @@ func main() {
 			}
 			continue
 		}
-		ui.PrintRepeaterTargets(serverResp.Repeaters)
+		if ui.Verbose {
+			ui.PrintRepeaterTargets(serverResp.Repeaters)
+		}
 
 		// -------------------------------------------------------------------
 		// Steps 9–11 — Poll each repeater for status and telemetry
 		// -------------------------------------------------------------------
-		ui.Section("Collecting repeater data")
+		if ui.Verbose {
+			ui.Section("Collecting repeater data")
+		}
 		for _, target := range serverResp.Repeaters {
 			pubKey, decErr := hex.DecodeString(target.PublicKey)
 			if decErr != nil || len(pubKey) != 32 {
@@ -190,14 +264,16 @@ func main() {
 			}
 
 			// Status request
-			ui.Info("→ Status request: %s", target.Name)
+			ui.Verb("→ Status request: %s", target.Name)
 			status, statusErr := device.RequestStatus(pubKey)
 			if statusErr != nil {
 				ui.Warn("  No status response from %s: %v", target.Name, statusErr)
 			} else {
-				ui.PrintStatusResult(target, status)
+				if ui.Verbose {
+					ui.PrintStatusResult(target, status)
+				}
 				if pubErr := PublishStatus(target, status); pubErr != nil {
-					ui.Warn("  MQTT publish failed: %v", pubErr)
+					ui.Warn("  MQTT publish failed for %s: %v", target.Name, pubErr)
 				}
 			}
 
@@ -206,14 +282,16 @@ func main() {
 			}
 
 			// Telemetry request
-			ui.Info("→ Telemetry request: %s", target.Name)
+			ui.Verb("→ Telemetry request: %s", target.Name)
 			telem, telemErr := device.RequestTelemetry(pubKey)
 			if telemErr != nil {
 				ui.Warn("  No telemetry response from %s: %v", target.Name, telemErr)
 			} else {
-				ui.PrintTelemetryResult(target, telem)
+				if ui.Verbose {
+					ui.PrintTelemetryResult(target, telem)
+				}
 				if pubErr := PublishTelemetry(target, telem); pubErr != nil {
-					ui.Warn("  MQTT publish failed: %v", pubErr)
+					ui.Warn("  MQTT publish failed for %s: %v", target.Name, pubErr)
 				}
 			}
 
@@ -221,17 +299,14 @@ func main() {
 				return
 			}
 		}
-		ui.Success("Cycle %d complete.", cycleNum)
+		ui.Verb("Cycle %d complete.", cycleNum)
 
 		// -------------------------------------------------------------------
 		// Step 12 — Wait before the next cycle
 		// -------------------------------------------------------------------
-		ui.Countdown("Idle", cfg.CycleInterval)
-		select {
-		case <-sigCh:
+		if !ui.Countdown("Idle", cfg.CycleInterval, sigCh) {
 			ui.Info("Shutting down.")
 			return
-		default:
 		}
 	}
 }
@@ -274,6 +349,21 @@ var stdinLines = func() <-chan string {
 	}()
 	return ch
 }()
+
+// promptWithDefault shows a prompt with a default value in brackets.
+// Pressing Enter without input accepts the default.
+func promptWithDefault(label, defaultVal string, sigCh <-chan os.Signal) (string, bool) {
+	fmt.Printf("%s%s?%s %s [%s]: ", ansiBold, ansiYellow, ansiReset, label, defaultVal)
+	line, ok := readLineOrExit(sigCh)
+	if !ok {
+		return "", false
+	}
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return defaultVal, true
+	}
+	return line, true
+}
 
 func readLineOrExit(sigCh <-chan os.Signal) (string, bool) {
 	select {

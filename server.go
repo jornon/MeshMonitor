@@ -42,6 +42,21 @@ type RepeaterTarget struct {
 	DistanceKm float64 `json:"distance_km"`
 }
 
+// DeviceConfig is returned by GET /api/v1/device/config with MQTT credentials.
+type DeviceConfig struct {
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	PublicKey string          `json:"public_key"`
+	MQTT      DeviceConfigMQTT `json:"mqtt"`
+}
+
+// DeviceConfigMQTT holds the MQTT credentials from the config endpoint.
+type DeviceConfigMQTT struct {
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	Username string `json:"username"`
+}
+
 // ---------------------------------------------------------------------------
 // Server client
 // ---------------------------------------------------------------------------
@@ -88,6 +103,47 @@ func PostDeviceReport(selfInfo *SelfInfo, devInfo *DeviceInfo) error {
 		return fmt.Errorf("server returned %s", resp.Status)
 	}
 	return nil
+}
+
+// FetchDeviceConfig retrieves the device configuration including MQTT credentials
+// from GET /api/v1/device/config.
+func FetchDeviceConfig() (*DeviceConfig, error) {
+	if cfg.ServerToken == "" {
+		return nil, fmt.Errorf("server.token is not set in config — cannot authenticate")
+	}
+
+	url := strings.TrimRight(cfg.ServerURL, "/") + "/api/v1/device/config"
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.ServerToken)
+	req.Header.Set("Accept", "application/json")
+
+	ui.Dimf("[server] GET %s\n", url)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("GET device config: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, fmt.Errorf("authentication failed (401) — check server.token in config")
+	}
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("server returned %s", resp.Status)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+
+	var devCfg DeviceConfig
+	if err := json.Unmarshal(data, &devCfg); err != nil {
+		return nil, fmt.Errorf("parse device config: %w", err)
+	}
+	return &devCfg, nil
 }
 
 // FetchRepeaters retrieves the list of repeaters this monitor should poll

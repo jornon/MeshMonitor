@@ -3,11 +3,13 @@ GO        := /usr/local/go/bin/go
 PREFIX    := /usr/local/bin
 CONFIGDIR := /etc/meshmonitor
 SERVICEFILE := meshmonitor.service
+VERSION   := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+LDFLAGS   := -ldflags "-X main.Version=$(VERSION)"
 
 .PHONY: build install uninstall enable start stop restart status clean
 
 build:
-	$(GO) build -o $(BINARY) .
+	$(GO) build $(LDFLAGS) -o $(BINARY) .
 
 install: build
 	sudo install -m 0755 $(BINARY) $(PREFIX)/$(BINARY)
