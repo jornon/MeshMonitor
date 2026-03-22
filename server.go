@@ -37,9 +37,9 @@ type ServerResponse struct {
 
 // RepeaterTarget describes a repeater the monitor should collect data from.
 type RepeaterTarget struct {
-	Name       string  `json:"name"`
-	PublicKey  string  `json:"public_key"` // hex, 64 chars (32 bytes)
-	DistanceKm float64 `json:"distance_km"`
+	Name      string `json:"name"`
+	PublicKey string `json:"public_key"` // hex, 64 chars (32 bytes)
+	Hops      int    `json:"hops"`
 }
 
 // DeviceConfig is returned by GET /api/v1/device/config with MQTT credentials.
