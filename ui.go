@@ -119,9 +119,9 @@ func (u *UI) PrintContacts(contacts []*Contact) {
 		u.Warn("No repeaters found.")
 		return
 	}
-	fmt.Printf("%s  %-20s  %-14s  %s%s\n",
-		ansiDim, "Name", "Public Key", "Location", ansiReset)
-	fmt.Printf("%s  %s%s\n", ansiDim, strings.Repeat("─", 52), ansiReset)
+	fmt.Printf("%s  %-20s  %-14s  %-5s  %s%s\n",
+		ansiDim, "Name", "Public Key", "Hops", "Location", ansiReset)
+	fmt.Printf("%s  %s%s\n", ansiDim, strings.Repeat("─", 58), ansiReset)
 	for _, c := range repeaters {
 		loc := ""
 		if c.Lat != 0 || c.Lon != 0 {
@@ -131,8 +131,12 @@ func (u *UI) PrintContacts(contacts []*Contact) {
 		if len(name) > 20 {
 			name = name[:17] + "..."
 		}
-		fmt.Printf("  %-20s  %s...  %s\n",
-			name, c.PublicKeyHex[:12], loc)
+		hops := "?"
+		if c.PathLen >= 0 {
+			hops = fmt.Sprintf("%d", c.PathLen)
+		}
+		fmt.Printf("  %-20s  %s...  %-5s  %s\n",
+			name, c.PublicKeyHex[:12], hops, loc)
 	}
 }
 

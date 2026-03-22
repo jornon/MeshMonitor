@@ -177,19 +177,30 @@ func main() {
 
 	// -------------------------------------------------------------------------
 	// Main monitoring loop
+	//   Base cycle: 15 min — polls repeaters 0–1 hops away
+	//   Every 2nd cycle (30 min) — also polls repeaters >1 hop away
 	// -------------------------------------------------------------------------
+	const (
+		nearCycleInterval = 15 * time.Minute
+		farCycleMultiple  = 2 // poll far repeaters every Nth cycle
+		nearMaxHops       = 1
+	)
 	cycleNum := 0
 	for {
 		cycleNum++
+		pollFar := cycleNum%farCycleMultiple == 0
 		if ui.Verbose {
-			ui.Section(fmt.Sprintf("Monitoring Cycle %d", cycleNum))
+			label := "near"
+			if pollFar {
+				label = "near+far"
+			}
+			ui.Section(fmt.Sprintf("Monitoring Cycle %d (%s)", cycleNum, label))
 		} else {
 			ui.Info("Cycle %d", cycleNum)
 		}
 
 		// -------------------------------------------------------------------
-		// Step 7 — Re-initialise device each cycle (refreshes self info,
-		//           syncs clock, discards stale buffers)
+		// Re-initialise device each cycle
 		// -------------------------------------------------------------------
 		ui.Verb("Initialising device...")
 		selfInfo, err = device.Init()
@@ -203,7 +214,7 @@ func main() {
 		}
 
 		// -------------------------------------------------------------------
-		// Step 7 — Collect contacts; advertise and retry if none found
+		// Collect contacts; advertise and retry if none found
 		// -------------------------------------------------------------------
 		var contacts []*Contact
 		for attempt := 1; ; attempt++ {
@@ -217,6 +228,9 @@ func main() {
 				if ui.Verbose {
 					ui.PrintContacts(contacts)
 				}
+				if err := PostRepeaterContacts(contacts); err != nil {
+					ui.Warn("Could not report contacts: %v", err)
+				}
 				break
 			}
 			ui.Warn("No contacts found. Sending advertisement and waiting %s...", cfg.AdvertWait)
@@ -229,8 +243,14 @@ func main() {
 			}
 		}
 
+		// Build hop lookup from contacts.
+		hopsByKey := make(map[string]int8, len(contacts))
+		for _, c := range contacts {
+			hopsByKey[c.PublicKeyHex] = c.PathLen
+		}
+
 		// -------------------------------------------------------------------
-		// Step 9 — Fetch repeater list from server
+		// Fetch repeater list from server
 		// -------------------------------------------------------------------
 		if ui.Verbose {
 			ui.Section("Fetching repeaters")
@@ -241,7 +261,7 @@ func main() {
 		}
 		if serverResp == nil || len(serverResp.Repeaters) == 0 {
 			ui.Warn("No repeaters to monitor this cycle.")
-			if !sleepOrExit(cfg.CycleInterval, sigCh) {
+			if !sleepOrExit(nearCycleInterval, sigCh) {
 				return
 			}
 			continue
@@ -251,20 +271,31 @@ func main() {
 		}
 
 		// -------------------------------------------------------------------
-		// Steps 9–11 — Poll each repeater for status and telemetry
+		// Poll each repeater for status and telemetry
 		// -------------------------------------------------------------------
 		if ui.Verbose {
 			ui.Section("Collecting repeater data")
 		}
 		for _, target := range serverResp.Repeaters {
+			hops, known := hopsByKey[target.PublicKey]
+			isNear := known && hops >= 0 && hops <= nearMaxHops
+
+			if !isNear && !pollFar {
+				ui.Verb("→ Skipping %s (%d hops, next far cycle)", target.Name, hops)
+				continue
+			}
+
 			pubKey, decErr := hex.DecodeString(target.PublicKey)
 			if decErr != nil || len(pubKey) != 32 {
 				ui.Warn("Skipping %s — invalid public key: %v", target.Name, decErr)
 				continue
 			}
 
-			// Status request
-			ui.Verb("→ Status request: %s", target.Name)
+			hopLabel := "?"
+			if known && hops >= 0 {
+				hopLabel = fmt.Sprintf("%d", hops)
+			}
+			ui.Verb("→ Status request: %s (%s hops)", target.Name, hopLabel)
 			status, statusErr := device.RequestStatus(pubKey)
 			if statusErr != nil {
 				ui.Warn("  No status response from %s: %v", target.Name, statusErr)
@@ -302,9 +333,9 @@ func main() {
 		ui.Verb("Cycle %d complete.", cycleNum)
 
 		// -------------------------------------------------------------------
-		// Step 12 — Wait before the next cycle
+		// Wait before the next cycle
 		// -------------------------------------------------------------------
-		if !ui.Countdown("Idle", cfg.CycleInterval, sigCh) {
+		if !ui.Countdown("Idle", nearCycleInterval, sigCh) {
 			ui.Info("Shutting down.")
 			return
 		}

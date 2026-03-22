@@ -57,6 +57,14 @@ type DeviceConfigMQTT struct {
 	Username string `json:"username"`
 }
 
+// RepeaterContact is a repeater seen by this monitor, sent to the server
+// so it can match monitors to nearby repeaters by hop count.
+type RepeaterContact struct {
+	Name      string `json:"name"`
+	PublicKey string `json:"public_key"`
+	Hops      int8   `json:"hops"`
+}
+
 // ---------------------------------------------------------------------------
 // Server client
 // ---------------------------------------------------------------------------
@@ -96,6 +104,53 @@ func PostDeviceReport(selfInfo *SelfInfo, devInfo *DeviceInfo) error {
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("POST device report: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("server returned %s", resp.Status)
+	}
+	return nil
+}
+
+// PostRepeaterContacts sends the list of repeaters visible to this monitor
+// (with hop counts) to the server. Only repeaters are included.
+func PostRepeaterContacts(contacts []*Contact) error {
+	var repeaters []RepeaterContact
+	for _, c := range contacts {
+		if c.Type != AdvTypeRepeater {
+			continue
+		}
+		repeaters = append(repeaters, RepeaterContact{
+			Name:      c.Name,
+			PublicKey: c.PublicKeyHex,
+			Hops:      c.PathLen,
+		})
+	}
+	if len(repeaters) == 0 {
+		return nil
+	}
+
+	wrapper := struct {
+		Contacts []RepeaterContact `json:"contacts"`
+	}{Contacts: repeaters}
+	body, err := json.Marshal(wrapper)
+	if err != nil {
+		return fmt.Errorf("marshal repeater contacts: %w", err)
+	}
+
+	url := strings.TrimRight(cfg.ServerURL, "/") + "/api/v1/device/contacts"
+	req, err := http.NewRequest(http.MethodPut, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+cfg.ServerToken)
+
+	ui.Dimf("[server] PUT %s (%d repeaters)\n", url, len(repeaters))
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("PUT repeater contacts: %w", err)
 	}
 	defer resp.Body.Close()
 

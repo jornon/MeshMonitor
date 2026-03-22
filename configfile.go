@@ -47,7 +47,7 @@ func defaultConfig() *AppConfig {
 		StatusTimeout:       15 * time.Second,
 		TelemetryTimeout:    15 * time.Second,
 		PortDetectTimeout:   60 * time.Second,
-		ServerURL:           "https://mesh.jorno.org",
+		ServerURL:           "https://oslofjordmesh.no",
 		MQTTHost:            "mqtt.jorno.org",
 		MQTTPort:            1883,
 		MQTTTopicPrefix:     "meshmonitor",
