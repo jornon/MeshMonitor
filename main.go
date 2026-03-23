@@ -345,17 +345,19 @@ func main() {
 				return
 			}
 
-			// Telemetry request
-			ui.Verb("→ Telemetry request: %s", target.Name)
-			telem, telemErr := device.RequestTelemetry(pubKey)
-			if telemErr != nil {
-				ui.Warn("  No telemetry response from %s: %v", target.Name, telemErr)
-			} else {
-				if ui.Verbose {
-					ui.PrintTelemetryResult(target, telem)
-				}
-				if pubErr := PublishTelemetry(target, telem); pubErr != nil {
-					ui.Warn("  MQTT publish failed for %s: %v", target.Name, pubErr)
+			// Telemetry request (only when temperature collection is enabled)
+			if target.CollectTemperature {
+				ui.Verb("→ Telemetry request: %s", target.Name)
+				telem, telemErr := device.RequestTelemetry(pubKey)
+				if telemErr != nil {
+					ui.Warn("  No telemetry response from %s: %v", target.Name, telemErr)
+				} else {
+					if ui.Verbose {
+						ui.PrintTelemetryResult(target, telem)
+					}
+					if pubErr := PublishTelemetry(target, telem); pubErr != nil {
+						ui.Warn("  MQTT publish failed for %s: %v", target.Name, pubErr)
+					}
 				}
 			}
 
