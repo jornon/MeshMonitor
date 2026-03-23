@@ -226,28 +226,47 @@ func (d *Device) sendBinaryReq(frame []byte) ([]byte, error) {
 	return nil, nil
 }
 
-// waitBinaryResponse waits for a BINARY_RESPONSE push (0x8C) and returns the response data.
+// waitBinaryResponse waits for a BINARY_RESPONSE push (0x8C) whose tag matches
+// the expected_ack returned by sendBinaryReq. Responses with non-matching tags
+// (late replies from previous requests) are discarded.
 // Frame layout: [0x8C](1) [reserved](1) [tag](4) [response_data...]
-func (d *Device) waitBinaryResponse(timeout time.Duration) ([]byte, error) {
-	push, err := d.proto.WaitPush(PushCodeBinaryResponse, timeout)
-	if err != nil {
-		return nil, err
+func (d *Device) waitBinaryResponse(expectedTag []byte, timeout time.Duration) ([]byte, error) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		push, err := d.proto.WaitPush(PushCodeBinaryResponse, remaining)
+		if err != nil {
+			return nil, err
+		}
+		if len(push) < 6 {
+			return nil, fmt.Errorf("binary response too short: %d bytes", len(push))
+		}
+		// If we have an expected tag, verify it matches.
+		if len(expectedTag) == 4 {
+			tag := push[2:6]
+			if tag[0] != expectedTag[0] || tag[1] != expectedTag[1] ||
+				tag[2] != expectedTag[2] || tag[3] != expectedTag[3] {
+				ui.Dimf("[device] discarding stale binary response (tag %x, want %x)\n", tag, expectedTag)
+				continue
+			}
+		}
+		return push[6:], nil
 	}
-	if len(push) < 6 {
-		return nil, fmt.Errorf("binary response too short: %d bytes", len(push))
-	}
-	return push[6:], nil // skip code(1) + reserved(1) + tag(4)
+	return nil, fmt.Errorf("timeout waiting for binary response")
 }
 
 // RequestStatus sends a status request to the given repeater (by 32-byte public key)
 // and waits for the push response. Returns an error if no response arrives within the timeout.
 func (d *Device) RequestStatus(pubKey []byte) (*StatusResponse, error) {
-	_, err := d.sendBinaryReq(BuildStatusReq(pubKey))
+	tag, err := d.sendBinaryReq(BuildStatusReq(pubKey))
 	if err != nil {
 		return nil, fmt.Errorf("status request: %w", err)
 	}
 
-	data, err := d.waitBinaryResponse(cfg.StatusTimeout)
+	data, err := d.waitBinaryResponse(tag, cfg.StatusTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("status response: %w", err)
 	}
@@ -257,12 +276,12 @@ func (d *Device) RequestStatus(pubKey []byte) (*StatusResponse, error) {
 // RequestTelemetry sends a telemetry request to the given contact (by 32-byte public key)
 // and waits for the push response.
 func (d *Device) RequestTelemetry(pubKey []byte) (*TelemetryResponse, error) {
-	_, err := d.sendBinaryReq(BuildTelemetryReq(pubKey))
+	tag, err := d.sendBinaryReq(BuildTelemetryReq(pubKey))
 	if err != nil {
 		return nil, fmt.Errorf("telemetry request: %w", err)
 	}
 
-	data, err := d.waitBinaryResponse(cfg.TelemetryTimeout)
+	data, err := d.waitBinaryResponse(tag, cfg.TelemetryTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("telemetry response: %w", err)
 	}

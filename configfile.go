@@ -41,8 +41,8 @@ type AppConfig struct {
 func defaultConfig() *AppConfig {
 	return &AppConfig{
 		CycleInterval:       5 * time.Minute,
-		MinDelayBetweenReqs: 1 * time.Second,
-		MaxDelayBetweenReqs: 3 * time.Second,
+		MinDelayBetweenReqs: 5 * time.Second,
+		MaxDelayBetweenReqs: 10 * time.Second,
 		AdvertWait:          30 * time.Second,
 		StatusTimeout:       15 * time.Second,
 		TelemetryTimeout:    15 * time.Second,
