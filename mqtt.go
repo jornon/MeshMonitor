@@ -81,13 +81,20 @@ func PublishStatus(target RepeaterTarget, status *StatusResponse) error {
 	return publish(topic, payload)
 }
 
-// PublishTelemetry publishes raw CayenneLPP telemetry data to the MQTT broker.
+// PublishTelemetry publishes decoded CayenneLPP telemetry data to the MQTT broker.
 func PublishTelemetry(target RepeaterTarget, telem *TelemetryResponse) error {
 	topic := fmt.Sprintf("%s/%s/telemetry", cfg.MQTTTopicPrefix, telem.PubKeyPrefix)
 	payload := map[string]any{
 		"name":           target.Name,
 		"pub_key_prefix": telem.PubKeyPrefix,
 		"cayenne_lpp":    telem.RawHex,
+	}
+	// Decode CayenneLPP and add individual fields.
+	if len(telem.RawData) > 0 {
+		decoded := DecodeCayenneLPP(telem.RawData)
+		for k, v := range CayenneToMap(decoded) {
+			payload[k] = v
+		}
 	}
 	return publish(topic, payload)
 }

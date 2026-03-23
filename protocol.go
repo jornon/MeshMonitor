@@ -56,7 +56,7 @@ func NewSerialProtocol(portName string) (*SerialProtocol, error) {
 	sp := &SerialProtocol{
 		port:       p,
 		responseCh: make(chan []byte, 32),
-		pushCh:     make(chan []byte, 32),
+		pushCh:     make(chan []byte, 128),
 		done:       make(chan struct{}),
 	}
 	sp.wg.Add(1)
@@ -292,6 +292,12 @@ func (sp *SerialProtocol) routeFrame(frame []byte) {
 		select {
 		case sp.pushCh <- frame:
 		default:
+			// Channel full — drain oldest push to make room.
+			select {
+			case <-sp.pushCh:
+			default:
+			}
+			sp.pushCh <- frame
 		}
 	} else {
 		select {

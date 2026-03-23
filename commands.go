@@ -18,8 +18,16 @@ const (
 	CmdSendSelfAdvert    = 0x07
 	CmdSyncNextMessage   = 0x0A
 	CmdDeviceQuery       = 0x16
-	CmdSendStatusReq     = 0x1B // decimal 27
-	CmdSendTelemetryReq  = 0x27 // decimal 39
+	CmdSendLogin         = 0x1A // decimal 26
+	CmdSendStatusReq     = 0x1B // decimal 27 (deprecated)
+	CmdSendLogout        = 0x1D // decimal 29
+	CmdSendTelemetryReq  = 0x27 // decimal 39 (deprecated)
+	CmdBinaryReq         = 0x32 // decimal 50 — new binary request protocol
+	CmdPathDiscovery     = 0x34 // decimal 52
+
+	// Binary request sub-types (used with CmdBinaryReq)
+	BinaryReqStatus    = 0x01
+	BinaryReqTelemetry = 0x03
 )
 
 // ---------------------------------------------------------------------------
@@ -45,9 +53,13 @@ const (
 	PushCodeAdvert            = 0x80
 	PushCodeSendConfirmed     = 0x82
 	PushCodeMsgWaiting        = 0x83
-	PushCodeStatusResponse    = 0x87
+	PushCodeLoginSuccess      = 0x85
+	PushCodeLoginFailed       = 0x86
+	PushCodeStatusResponse    = 0x87 // legacy
 	PushCodeNewAdvert         = 0x8A
-	PushCodeTelemetryResponse = 0x8B
+	PushCodeTelemetryResponse = 0x8B // legacy
+	PushCodeBinaryResponse    = 0x8C
+	PushCodePathDiscoveryResp = 0x8D
 )
 
 // ---------------------------------------------------------------------------
@@ -108,27 +120,63 @@ func BuildSendAdvert(flood bool) []byte {
 	return []byte{CmdSendSelfAdvert, mode}
 }
 
-// BuildStatusReq returns the CMD_SEND_STATUS_REQ frame.
-// Layout: [0x1B][pub_key (32 bytes)]
-func BuildStatusReq(pubKey []byte) []byte {
+// BuildLogin returns the CMD_SEND_LOGIN frame.
+// Layout: [0x1A][pub_key (32 bytes)][password UTF-8]
+func BuildLogin(pubKey []byte, password string) []byte {
+	if len(pubKey) != 32 {
+		panic("pubKey must be exactly 32 bytes")
+	}
+	frame := make([]byte, 33+len(password))
+	frame[0] = CmdSendLogin
+	copy(frame[1:33], pubKey)
+	copy(frame[33:], []byte(password))
+	return frame
+}
+
+// BuildLogout returns the CMD_SEND_LOGOUT frame.
+// Layout: [0x1D][pub_key (32 bytes)]
+func BuildLogout(pubKey []byte) []byte {
 	if len(pubKey) != 32 {
 		panic("pubKey must be exactly 32 bytes")
 	}
 	frame := make([]byte, 33)
-	frame[0] = CmdSendStatusReq
+	frame[0] = CmdSendLogout
 	copy(frame[1:], pubKey)
 	return frame
 }
 
-// BuildTelemetryReq returns the CMD_SEND_TELEMETRY_REQ frame.
-// Layout: [0x27][reserved×3][pub_key (32 bytes)]
-func BuildTelemetryReq(pubKey []byte) []byte {
+// BuildPathDiscovery returns the CMD_PATH_DISCOVERY frame.
+// Layout: [0x34][0x00][pub_key (32 bytes)]
+func BuildPathDiscovery(pubKey []byte) []byte {
 	if len(pubKey) != 32 {
 		panic("pubKey must be exactly 32 bytes")
 	}
-	frame := make([]byte, 36)
-	frame[0] = CmdSendTelemetryReq
-	// bytes 1-3: reserved (zero)
-	copy(frame[4:], pubKey)
+	frame := make([]byte, 34)
+	frame[0] = CmdPathDiscovery
+	frame[1] = 0x00
+	copy(frame[2:], pubKey)
 	return frame
+}
+
+// BuildBinaryReq returns a CMD_BINARY_REQ frame.
+// Layout: [0x32][pub_key (32 bytes)][request_type (1 byte)]
+func BuildBinaryReq(pubKey []byte, reqType byte) []byte {
+	if len(pubKey) != 32 {
+		panic("pubKey must be exactly 32 bytes")
+	}
+	frame := make([]byte, 34)
+	frame[0] = CmdBinaryReq
+	copy(frame[1:33], pubKey)
+	frame[33] = reqType
+	return frame
+}
+
+// BuildStatusReq returns a status request using the binary request protocol.
+func BuildStatusReq(pubKey []byte) []byte {
+	return BuildBinaryReq(pubKey, BinaryReqStatus)
+}
+
+// BuildTelemetryReq returns a telemetry request using the binary request protocol.
+func BuildTelemetryReq(pubKey []byte) []byte {
+	return BuildBinaryReq(pubKey, BinaryReqTelemetry)
 }

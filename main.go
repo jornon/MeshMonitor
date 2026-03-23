@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"math/rand"
@@ -188,7 +189,7 @@ func main() {
 	cycleNum := 0
 	for {
 		cycleNum++
-		pollFar := cycleNum%farCycleMultiple == 0
+		pollFar := cycleNum == 1 || cycleNum%farCycleMultiple == 0
 		if ui.Verbose {
 			label := "near"
 			if pollFar {
@@ -217,6 +218,7 @@ func main() {
 		// Collect contacts; advertise and retry if none found
 		// -------------------------------------------------------------------
 		var contacts []*Contact
+		var cached statusCache
 		for attempt := 1; ; attempt++ {
 			ui.Verb("Fetching contacts (attempt %d)...", attempt)
 			contacts, err = device.GetContacts()
@@ -225,6 +227,10 @@ func main() {
 			}
 			if len(contacts) > 0 {
 				ui.Verb("Found %d contact(s).", len(contacts))
+
+				// Discover paths for repeaters with unknown hop count.
+				contacts, cached = discoverPaths(device, contacts, sigCh)
+
 				if ui.Verbose {
 					ui.PrintContacts(contacts)
 				}
@@ -295,11 +301,35 @@ func main() {
 			if known && hops >= 0 {
 				hopLabel = fmt.Sprintf("%d", hops)
 			}
-			ui.Verb("→ Status request: %s (%s hops)", target.Name, hopLabel)
-			status, statusErr := device.RequestStatus(pubKey)
+
+			// Login if guest password is set for this repeater.
+			needsLogout := false
+			if target.GuestPassword != "" {
+				ui.Verb("→ Login: %s (guest)", target.Name)
+				if loginErr := device.Login(pubKey, target.GuestPassword); loginErr != nil {
+					ui.Warn("  Login failed for %s: %v", target.Name, loginErr)
+				} else {
+					needsLogout = true
+					ui.Verb("  Login success: %s", target.Name)
+				}
+				if !sleepOrExit(randomDelay(), sigCh) {
+					return
+				}
+			}
+
+			// Use cached status from path discovery if available.
+			var status *StatusResponse
+			var statusErr error
+			if s, ok := cached[target.PublicKey]; ok {
+				status = s
+				ui.Verb("→ Status (cached): %s (%s hops)", target.Name, hopLabel)
+			} else {
+				ui.Verb("→ Status request: %s (%s hops)", target.Name, hopLabel)
+				status, statusErr = device.RequestStatus(pubKey)
+			}
 			if statusErr != nil {
 				ui.Warn("  No status response from %s: %v", target.Name, statusErr)
-			} else {
+			} else if status != nil {
 				if ui.Verbose {
 					ui.PrintStatusResult(target, status)
 				}
@@ -309,6 +339,9 @@ func main() {
 			}
 
 			if !sleepOrExit(randomDelay(), sigCh) {
+				if needsLogout {
+					device.Logout(pubKey)
+				}
 				return
 			}
 
@@ -326,6 +359,11 @@ func main() {
 				}
 			}
 
+			// Logout if we logged in.
+			if needsLogout {
+				device.Logout(pubKey)
+			}
+
 			if !sleepOrExit(randomDelay(), sigCh) {
 				return
 			}
@@ -340,6 +378,143 @@ func main() {
 			return
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Path discovery — probe repeaters with unknown hop count
+// ---------------------------------------------------------------------------
+
+// statusCache holds status responses obtained during path discovery,
+// so we don't re-request repeaters that were already probed.
+type statusCache map[string]*StatusResponse
+
+const (
+	discoveryFailFile    = "discovery_failures.json"
+	discoveryCooldown    = 24 * time.Hour
+	discoveryStaleWindow = 5 * time.Hour
+)
+
+// loadDiscoveryFailures reads the failure cooldown file.
+func loadDiscoveryFailures() map[string]int64 {
+	data, err := os.ReadFile(discoveryFailFile)
+	if err != nil {
+		return make(map[string]int64)
+	}
+	var failures map[string]int64
+	if json.Unmarshal(data, &failures) != nil {
+		return make(map[string]int64)
+	}
+	return failures
+}
+
+// saveDiscoveryFailures writes the failure cooldown file.
+func saveDiscoveryFailures(failures map[string]int64) {
+	data, err := json.Marshal(failures)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(discoveryFailFile, data, 0644)
+}
+
+// discoverPaths sends a status request to each repeater contact with PathLen == -1
+// to trigger mesh route discovery, then re-fetches the contact list to get updated
+// hop counts. Returns the updated contact list and a cache of status responses
+// that can be reused during the monitoring pass.
+func discoverPaths(device *Device, contacts []*Contact, sigCh <-chan os.Signal) ([]*Contact, statusCache) {
+	cache := make(statusCache)
+	failures := loadDiscoveryFailures()
+	now := time.Now()
+	staleThreshold := now.Add(-discoveryStaleWindow).Unix()
+
+	var unknown []*Contact
+	for _, c := range contacts {
+		if c.Type != AdvTypeRepeater || c.PathLen >= 0 {
+			continue
+		}
+		if c.LastAdvert <= uint32(staleThreshold) {
+			continue
+		}
+		if failTime, ok := failures[c.PublicKeyHex]; ok && now.Unix()-failTime < int64(discoveryCooldown.Seconds()) {
+			ui.Verb("  Skipping %s — failed discovery less than 24h ago", c.Name)
+			continue
+		}
+		unknown = append(unknown, c)
+	}
+	if len(unknown) == 0 {
+		return contacts, cache
+	}
+
+	ui.Verb("Discovering paths for %d repeater(s) with unknown hops...", len(unknown))
+	for _, c := range unknown {
+		select {
+		case <-sigCh:
+			ui.Info("Shutting down.")
+			return contacts, cache
+		default:
+		}
+
+		ui.Verb("  Path discovery: %s...", c.Name)
+
+		ch := make(chan error, 1)
+		go func() {
+			ch <- device.PathDiscovery(c.PublicKey)
+		}()
+
+		select {
+		case <-ch:
+		case <-sigCh:
+			ui.Info("Shutting down.")
+			return contacts, cache
+		}
+
+		if !sleepOrExit(1*time.Second, sigCh) {
+			return contacts, cache
+		}
+	}
+
+	// Re-fetch contacts to pick up updated path info.
+	updated, err := device.GetContacts()
+	if err != nil || len(updated) == 0 {
+		ui.Verb("  Could not re-fetch contacts after path discovery")
+		updated = contacts
+	}
+
+	// Check which probed repeaters resolved vs still unknown.
+	resolvedSet := make(map[string]bool)
+	for _, c := range updated {
+		if c.Type == AdvTypeRepeater && c.PathLen >= 0 {
+			for _, u := range unknown {
+				if c.PublicKeyHex == u.PublicKeyHex {
+					resolvedSet[c.PublicKeyHex] = true
+					break
+				}
+			}
+		}
+	}
+	failedKeys := make(map[string]bool)
+	for _, u := range unknown {
+		if !resolvedSet[u.PublicKeyHex] {
+			failedKeys[u.PublicKeyHex] = true
+		}
+	}
+
+	// Update failure file.
+	if len(failedKeys) > 0 {
+		for key := range failedKeys {
+			failures[key] = now.Unix()
+		}
+		// Prune entries older than cooldown.
+		for key, ts := range failures {
+			if now.Unix()-ts >= int64(discoveryCooldown.Seconds()) {
+				delete(failures, key)
+			}
+		}
+		saveDiscoveryFailures(failures)
+	}
+
+	resolved := len(resolvedSet)
+	ui.Verb("  Resolved %d of %d unknown paths", resolved, len(unknown))
+	return updated, cache
 }
 
 // ---------------------------------------------------------------------------

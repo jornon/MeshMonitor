@@ -245,6 +245,50 @@ func ParseTelemetryResponse(frame []byte) (*TelemetryResponse, error) {
 	return r, nil
 }
 
+// ParseBinaryStatusResponse parses status data from a binary response (0x8C).
+// The data is the raw RepeaterStats struct with no header.
+func ParseBinaryStatusResponse(data []byte, pubKeyPrefix []byte) (*StatusResponse, error) {
+	if len(data) < 52 {
+		return nil, fmt.Errorf("binary status data too short: %d bytes", len(data))
+	}
+	r := &StatusResponse{}
+	r.PubKeyPrefix = hex.EncodeToString(pubKeyPrefix)
+
+	rd := bytes.NewReader(data)
+	binary.Read(rd, binary.LittleEndian, &r.BattMilliVolts)
+	binary.Read(rd, binary.LittleEndian, &r.TxQueueLen)
+	binary.Read(rd, binary.LittleEndian, &r.NoiseFloor)
+	binary.Read(rd, binary.LittleEndian, &r.LastRSSI)
+	binary.Read(rd, binary.LittleEndian, &r.PacketsRecv)
+	binary.Read(rd, binary.LittleEndian, &r.PacketsSent)
+	binary.Read(rd, binary.LittleEndian, &r.AirTimeSecs)
+	binary.Read(rd, binary.LittleEndian, &r.UpTimeSecs)
+	binary.Read(rd, binary.LittleEndian, &r.SentFlood)
+	binary.Read(rd, binary.LittleEndian, &r.SentDirect)
+	binary.Read(rd, binary.LittleEndian, &r.RecvFlood)
+	binary.Read(rd, binary.LittleEndian, &r.RecvDirect)
+	binary.Read(rd, binary.LittleEndian, &r.ErrEvents)
+	binary.Read(rd, binary.LittleEndian, &r.LastSNRx4)
+	binary.Read(rd, binary.LittleEndian, &r.DirectDups)
+	binary.Read(rd, binary.LittleEndian, &r.FloodDups)
+	binary.Read(rd, binary.LittleEndian, &r.RxAirTimeSecs)
+	binary.Read(rd, binary.LittleEndian, &r.RecvErrors)
+	return r, nil
+}
+
+// ParseBinaryTelemetryResponse parses telemetry data from a binary response (0x8C).
+// The data is raw CayenneLPP bytes with no header.
+func ParseBinaryTelemetryResponse(data []byte, pubKeyPrefix []byte) (*TelemetryResponse, error) {
+	r := &TelemetryResponse{}
+	r.PubKeyPrefix = hex.EncodeToString(pubKeyPrefix)
+	if len(data) > 0 {
+		r.RawData = make([]byte, len(data))
+		copy(r.RawData, data)
+		r.RawHex = hex.EncodeToString(r.RawData)
+	}
+	return r, nil
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

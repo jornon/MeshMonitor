@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"sync"
+	"time"
 )
 
 // Device provides a high-level API for interacting with a MeshCore companion device.
@@ -142,55 +143,128 @@ func (d *Device) SendAdvert() error {
 	return nil
 }
 
-// RequestStatus sends a status request to the given repeater (by 32-byte public key)
-// and waits for the push response. Returns an error if no response arrives within the timeout.
-func (d *Device) RequestStatus(pubKey []byte) (*StatusResponse, error) {
-	// Hold the mutex only for the command/ack exchange; push comes asynchronously.
+// Login authenticates with a repeater using the given guest password.
+// Returns nil on success, error on failure or timeout.
+func (d *Device) Login(pubKey []byte, password string) error {
 	d.mu.Lock()
-	err := d.proto.SendFrame(BuildStatusReq(pubKey))
+	err := d.proto.SendFrame(BuildLogin(pubKey, password))
 	if err != nil {
 		d.mu.Unlock()
-		return nil, fmt.Errorf("send status req: %w", err)
+		return fmt.Errorf("send login: %w", err)
 	}
 	resp, err := d.proto.WaitResponse(CommandResponseTimeout)
 	d.mu.Unlock()
 
 	if err != nil {
-		return nil, fmt.Errorf("status req ack: %w", err)
+		return fmt.Errorf("login ack: %w", err)
 	}
 	if resp[0] == RespCodeErr {
-		return nil, fmt.Errorf("device error for status request (contact not in device contacts?)")
+		return fmt.Errorf("device rejected login command")
 	}
 
-	push, err := d.proto.WaitPush(PushCodeStatusResponse, cfg.StatusTimeout)
+	// Wait for LOGIN_SUCCESS or LOGIN_FAILED push.
+	push, err := d.proto.WaitPush(PushCodeLoginSuccess, cfg.StatusTimeout)
+	if err != nil {
+		// Check if we got a LOGIN_FAILED instead.
+		return fmt.Errorf("login failed or timed out: %w", err)
+	}
+	_ = push
+	return nil
+}
+
+// Logout ends the authenticated session with a repeater.
+func (d *Device) Logout(pubKey []byte) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_ = d.proto.SendFrame(BuildLogout(pubKey))
+	_, _ = d.proto.WaitResponse(CommandResponseTimeout)
+}
+
+// PathDiscovery sends a path discovery request for the given repeater.
+// This triggers the mesh routing layer to find a path without requiring
+// a full status exchange.
+func (d *Device) PathDiscovery(pubKey []byte) error {
+	d.mu.Lock()
+	err := d.proto.SendFrame(BuildPathDiscovery(pubKey))
+	if err != nil {
+		d.mu.Unlock()
+		return fmt.Errorf("send path discovery: %w", err)
+	}
+	resp, err := d.proto.WaitResponse(CommandResponseTimeout)
+	d.mu.Unlock()
+
+	if err != nil {
+		return fmt.Errorf("path discovery ack: %w", err)
+	}
+	if resp[0] == RespCodeErr {
+		return fmt.Errorf("device rejected path discovery")
+	}
+	return nil
+}
+
+// sendBinaryReq sends a binary request and returns the expected_ack tag from the SENT response.
+func (d *Device) sendBinaryReq(frame []byte) ([]byte, error) {
+	d.mu.Lock()
+	err := d.proto.SendFrame(frame)
+	if err != nil {
+		d.mu.Unlock()
+		return nil, fmt.Errorf("send binary req: %w", err)
+	}
+	resp, err := d.proto.WaitResponse(CommandResponseTimeout)
+	d.mu.Unlock()
+
+	if err != nil {
+		return nil, fmt.Errorf("binary req ack: %w", err)
+	}
+	if resp[0] == RespCodeErr {
+		return nil, fmt.Errorf("device rejected request")
+	}
+	// RespCodeSent (0x06): [0x06][type 1][expected_ack 4][suggested_timeout 4]
+	if resp[0] == RespCodeSent && len(resp) >= 6 {
+		return resp[2:6], nil
+	}
+	return nil, nil
+}
+
+// waitBinaryResponse waits for a BINARY_RESPONSE push (0x8C) and returns the response data.
+// Frame layout: [0x8C](1) [reserved](1) [tag](4) [response_data...]
+func (d *Device) waitBinaryResponse(timeout time.Duration) ([]byte, error) {
+	push, err := d.proto.WaitPush(PushCodeBinaryResponse, timeout)
+	if err != nil {
+		return nil, err
+	}
+	if len(push) < 6 {
+		return nil, fmt.Errorf("binary response too short: %d bytes", len(push))
+	}
+	return push[6:], nil // skip code(1) + reserved(1) + tag(4)
+}
+
+// RequestStatus sends a status request to the given repeater (by 32-byte public key)
+// and waits for the push response. Returns an error if no response arrives within the timeout.
+func (d *Device) RequestStatus(pubKey []byte) (*StatusResponse, error) {
+	_, err := d.sendBinaryReq(BuildStatusReq(pubKey))
+	if err != nil {
+		return nil, fmt.Errorf("status request: %w", err)
+	}
+
+	data, err := d.waitBinaryResponse(cfg.StatusTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("status response: %w", err)
 	}
-	return ParseStatusResponse(push)
+	return ParseBinaryStatusResponse(data, pubKey[:6])
 }
 
 // RequestTelemetry sends a telemetry request to the given contact (by 32-byte public key)
 // and waits for the push response.
 func (d *Device) RequestTelemetry(pubKey []byte) (*TelemetryResponse, error) {
-	d.mu.Lock()
-	err := d.proto.SendFrame(BuildTelemetryReq(pubKey))
+	_, err := d.sendBinaryReq(BuildTelemetryReq(pubKey))
 	if err != nil {
-		d.mu.Unlock()
-		return nil, fmt.Errorf("send telemetry req: %w", err)
-	}
-	resp, err := d.proto.WaitResponse(CommandResponseTimeout)
-	d.mu.Unlock()
-
-	if err != nil {
-		return nil, fmt.Errorf("telemetry req ack: %w", err)
-	}
-	if resp[0] == RespCodeErr {
-		return nil, fmt.Errorf("device error for telemetry request (contact not in device contacts?)")
+		return nil, fmt.Errorf("telemetry request: %w", err)
 	}
 
-	push, err := d.proto.WaitPush(PushCodeTelemetryResponse, cfg.TelemetryTimeout)
+	data, err := d.waitBinaryResponse(cfg.TelemetryTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("telemetry response: %w", err)
 	}
-	return ParseTelemetryResponse(push)
+	return ParseBinaryTelemetryResponse(data, pubKey[:6])
 }
