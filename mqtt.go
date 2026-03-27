@@ -120,28 +120,29 @@ func PublishTelemetry(target RepeaterTarget, telem *TelemetryResponse, contactGP
 }
 
 // PublishNeighbours publishes a repeater's neighbour list to the MQTT broker.
-func PublishNeighbours(target RepeaterTarget, neighbours []NeighbourEntry) error {
-	prefix := target.PublicKey
-	if len(prefix) > 12 {
-		prefix = prefix[:12]
-	}
-	topic := fmt.Sprintf("%s/%s/neighbours", cfg.MQTTTopicPrefix, prefix)
+// contactsByPrefix is used to resolve 4-byte neighbour prefixes to full public keys.
+func PublishNeighbours(target RepeaterTarget, neighbours []NeighbourEntry, contactsByPrefix map[string]string) error {
+	topic := fmt.Sprintf("%s/%s/neighbours", cfg.MQTTTopicPrefix, target.PublicKey[:12])
 	type neighbourJSON struct {
-		PubKeyPrefix string  `json:"pub_key_prefix"`
-		SecsAgo      int32   `json:"secs_ago"`
-		SNR          float64 `json:"snr_db"`
+		PublicKey string  `json:"public_key"`
+		SecsAgo   int32   `json:"secs_ago"`
+		SNR       float64 `json:"snr_db"`
 	}
 	var entries []neighbourJSON
 	for _, n := range neighbours {
+		fullKey := contactsByPrefix[n.PubKeyPrefix]
+		if fullKey == "" {
+			fullKey = n.PubKeyPrefix // fallback to prefix if not resolved
+		}
 		entries = append(entries, neighbourJSON{
-			PubKeyPrefix: n.PubKeyPrefix,
-			SecsAgo:      n.SecsAgo,
-			SNR:          n.SNR,
+			PublicKey: fullKey,
+			SecsAgo:   n.SecsAgo,
+			SNR:       n.SNR,
 		})
 	}
 	payload := map[string]any{
 		"name":       target.Name,
-		"pub_key":    target.PublicKey,
+		"public_key": target.PublicKey,
 		"neighbours": entries,
 	}
 	return publish(topic, payload)
