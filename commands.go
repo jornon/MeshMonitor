@@ -17,6 +17,8 @@ const (
 	CmdSetDeviceTime     = 0x06
 	CmdSendSelfAdvert    = 0x07
 	CmdSyncNextMessage   = 0x0A
+	CmdResetPath         = 0x0D // decimal 13
+	CmdRemoveContact     = 0x0F // decimal 15
 	CmdDeviceQuery       = 0x16
 	CmdSendLogin         = 0x1A // decimal 26
 	CmdSendStatusReq     = 0x1B // decimal 27 (deprecated)
@@ -141,6 +143,20 @@ func BuildLogout(pubKey []byte) []byte {
 	}
 	frame := make([]byte, 33)
 	frame[0] = CmdSendLogout
+	copy(frame[1:], pubKey)
+	return frame
+}
+
+// BuildResetPath returns the CMD_RESET_PATH frame.
+// This clears the cached out_path for a contact, forcing the next
+// communication to use flood routing and trigger a fresh path return.
+// Layout: [0x0D][pub_key (32 bytes)]
+func BuildResetPath(pubKey []byte) []byte {
+	if len(pubKey) != 32 {
+		panic("pubKey must be exactly 32 bytes")
+	}
+	frame := make([]byte, 33)
+	frame[0] = CmdResetPath
 	copy(frame[1:], pubKey)
 	return frame
 }

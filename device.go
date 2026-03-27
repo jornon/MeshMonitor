@@ -180,6 +180,26 @@ func (d *Device) Logout(pubKey []byte) {
 	_, _ = d.proto.WaitResponse(CommandResponseTimeout)
 }
 
+// ResetPath clears the cached path for a contact on the MeshCore device.
+// The next communication to this contact will use flood routing, which
+// triggers a fresh path return and establishes an up-to-date route.
+func (d *Device) ResetPath(pubKey []byte) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if err := d.proto.SendFrame(BuildResetPath(pubKey)); err != nil {
+		return fmt.Errorf("send reset path: %w", err)
+	}
+	resp, err := d.proto.WaitResponse(CommandResponseTimeout)
+	if err != nil {
+		return fmt.Errorf("reset path ack: %w", err)
+	}
+	if resp[0] == RespCodeErr {
+		return fmt.Errorf("device rejected reset path")
+	}
+	return nil
+}
+
 // PathDiscovery sends a path discovery request for the given repeater.
 // This triggers the mesh routing layer to find a path without requiring
 // a full status exchange.
