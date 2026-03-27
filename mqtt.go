@@ -170,12 +170,27 @@ func publish(topic string, payload any) error {
 	ok := token.WaitTimeout(5 * time.Second)
 	if token.Error() != nil {
 		ui.Dimf("     📤 ❌ %s: %v\n", topic, token.Error())
+		resetMQTT() // force reconnect on next publish
 		return fmt.Errorf("mqtt publish: %w", token.Error())
 	}
 	if !ok {
 		ui.Dimf("     📤 ❌ %s: timeout\n", topic)
+		resetMQTT() // force reconnect on next publish
 		return fmt.Errorf("mqtt publish timeout for %s", topic)
 	}
 	ui.Dimf("     📤 %s (%d bytes)\n", topic, len(data))
 	return nil
+}
+
+// resetMQTT tears down the current MQTT connection so that the next
+// publish triggers a fresh connectMQTT(). This handles the case where
+// the underlying TCP connection has died but mqttReady is still true.
+func resetMQTT() {
+	mqttMu.Lock()
+	defer mqttMu.Unlock()
+	if mqttClient != nil {
+		mqttClient.Disconnect(250)
+	}
+	mqttReady = false
+	ui.Warn("MQTT connection reset — will reconnect on next publish")
 }
