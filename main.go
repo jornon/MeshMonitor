@@ -16,6 +16,7 @@ import (
 
 func main() {
 	verbose := flag.Bool("v", false, "verbose output")
+	checkUpdate := flag.Bool("check-update", false, "check for updates and exit")
 	flag.Parse()
 	ui.Verbose = *verbose
 
@@ -30,6 +31,12 @@ func main() {
 	// Always ensure a default template exists so users can discover options.
 	if err := WriteDefaultConfig(cfgPath); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not write default config: %v\n", err)
+	}
+
+	// Handle --check-update: print result and exit immediately.
+	if *checkUpdate {
+		handleCheckUpdateFlag()
+		return
 	}
 
 	if ui.Verbose {
@@ -48,6 +55,19 @@ func main() {
 	// Trap Ctrl+C for a clean shutdown.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+
+	// -------------------------------------------------------------------------
+	// Auto-update — check at startup, then periodically in the background
+	// -------------------------------------------------------------------------
+	updateCh := make(chan bool, 1)
+	if cfg.AutoUpdate {
+		ui.Verb("Checking for updates...")
+		if performUpdate() {
+			return // unreachable after exec, but keeps the compiler happy
+		}
+		// Start background update checker.
+		go runUpdateLoop(updateCh)
+	}
 
 	// -------------------------------------------------------------------------
 	// Steps 2–5 — Serial port setup
@@ -228,6 +248,9 @@ func main() {
 			if len(contacts) > 0 {
 				ui.Verb("Found %d contact(s).", len(contacts))
 
+				// Reset stale paths so they get re-discovered.
+				contacts = refreshStalePaths(device, contacts, sigCh)
+
 				// Discover paths for repeaters with unknown hop count.
 				contacts, cached = discoverPaths(device, contacts, sigCh)
 
@@ -373,8 +396,22 @@ func main() {
 		ui.Verb("Cycle %d complete.", cycleNum)
 
 		// -------------------------------------------------------------------
-		// Wait before the next cycle
+		// Wait before the next cycle — apply pending updates if available
 		// -------------------------------------------------------------------
+		select {
+		case <-updateCh:
+			ui.Info("Update available — applying now...")
+			device.Close()
+			performUpdate()
+			// If we reach here, update failed — reopen device.
+			ui.Warn("Update failed, continuing normal operation.")
+			device, err = NewDevice(connectedPort)
+			if err != nil {
+				ui.Error("Failed to reopen device after update: %v", err)
+				os.Exit(1)
+			}
+		default:
+		}
 		if !ui.Countdown("Idle", nearCycleInterval, sigCh) {
 			ui.Info("Shutting down.")
 			return
@@ -394,6 +431,17 @@ const (
 	discoveryFailFile    = "discovery_failures.json"
 	discoveryCooldown    = 24 * time.Hour
 	discoveryStaleWindow = 5 * time.Hour
+
+	// pathMaxAge is the maximum age of a cached path before it is reset.
+	// If a repeater's path hasn't been updated in this window, we force
+	// re-discovery to ensure the route is still valid.
+	pathMaxAge = 6 * time.Hour
+
+	// pathAdvertDrift is the minimum gap between LastAdvert and LastMod
+	// that triggers a path reset. If the contact re-advertised (e.g. after
+	// moving or rebooting) but the path wasn't refreshed, the route may
+	// be stale.
+	pathAdvertDrift = 30 * time.Minute
 )
 
 // loadDiscoveryFailures reads the failure cooldown file.
@@ -517,6 +565,72 @@ func discoverPaths(device *Device, contacts []*Contact, sigCh <-chan os.Signal) 
 	resolved := len(resolvedSet)
 	ui.Verb("  Resolved %d of %d unknown paths", resolved, len(unknown))
 	return updated, cache
+}
+
+// ---------------------------------------------------------------------------
+// Stale path refresh — reset paths that are likely outdated
+// ---------------------------------------------------------------------------
+
+// refreshStalePaths identifies repeaters with cached paths that may be outdated
+// and resets them via CMD_RESET_PATH. A path is considered stale when:
+//   - It is older than pathMaxAge, OR
+//   - The contact re-advertised (LastAdvert) significantly after the path was
+//     last modified (LastMod), suggesting the node moved or rebooted.
+//
+// After resetting, a re-fetch of contacts picks up the cleared paths (PathLen = -1),
+// which the normal discoverPaths flow will then re-probe.
+func refreshStalePaths(device *Device, contacts []*Contact, sigCh <-chan os.Signal) []*Contact {
+	now := uint32(time.Now().Unix())
+	maxAgeThreshold := now - uint32(pathMaxAge.Seconds())
+	driftThreshold := uint32(pathAdvertDrift.Seconds())
+
+	var stale []*Contact
+	for _, c := range contacts {
+		if c.Type != AdvTypeRepeater || c.PathLen < 0 {
+			continue // skip non-repeaters and already-unknown paths
+		}
+		// Check 1: path is older than max age.
+		if c.LastMod > 0 && c.LastMod < maxAgeThreshold {
+			stale = append(stale, c)
+			continue
+		}
+		// Check 2: contact re-advertised but path wasn't refreshed.
+		// LastAdvert is the remote node's clock, LastMod is our local clock.
+		// We compare the gap: if advert is much newer than lastmod, the node
+		// has been heard recently but via a potentially different route.
+		if c.LastAdvert > 0 && c.LastMod > 0 && c.LastAdvert > c.LastMod+driftThreshold {
+			stale = append(stale, c)
+			continue
+		}
+	}
+
+	if len(stale) == 0 {
+		return contacts
+	}
+
+	ui.Verb("Resetting %d stale path(s)...", len(stale))
+	for _, c := range stale {
+		select {
+		case <-sigCh:
+			return contacts
+		default:
+		}
+		ui.Verb("  Reset path: %s (hops=%d, lastmod=%d, advert=%d)", c.Name, c.PathLen, c.LastMod, c.LastAdvert)
+		if err := device.ResetPath(c.PublicKey); err != nil {
+			ui.Warn("  Reset path failed for %s: %v", c.Name, err)
+		}
+		if !sleepOrExit(500*time.Millisecond, sigCh) {
+			return contacts
+		}
+	}
+
+	// Re-fetch contacts — the reset paths will now show PathLen = -1.
+	updated, err := device.GetContacts()
+	if err != nil || len(updated) == 0 {
+		ui.Verb("  Could not re-fetch contacts after path reset")
+		return contacts
+	}
+	return updated
 }
 
 // ---------------------------------------------------------------------------

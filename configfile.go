@@ -36,6 +36,10 @@ type AppConfig struct {
 	MQTTHost        string
 	MQTTPort        int
 	MQTTTopicPrefix string
+
+	// [update]
+	AutoUpdate     bool          // enable automatic update checks
+	UpdateInterval time.Duration // how often to check for updates
 }
 
 func defaultConfig() *AppConfig {
@@ -51,6 +55,8 @@ func defaultConfig() *AppConfig {
 		MQTTHost:            "mqtt.jorno.org",
 		MQTTPort:            1883,
 		MQTTTopicPrefix:     "meshmonitor",
+		AutoUpdate:          true,
+		UpdateInterval:      1 * time.Hour,
 	}
 }
 
@@ -163,6 +169,13 @@ func applyConfigKey(section, key, val string) {
 		}
 	case "mqtt.topic_prefix":
 		cfg.MQTTTopicPrefix = val
+
+	case "update.auto_update":
+		cfg.AutoUpdate = strings.ToLower(val) == "true" || val == "1"
+	case "update.check_interval_mins":
+		if m, err := strconv.ParseFloat(val, 64); err == nil {
+			cfg.UpdateInterval = time.Duration(m * float64(time.Minute))
+		}
 	}
 }
 
@@ -376,6 +389,14 @@ func defaultConfigTemplate() string {
 
 ; MQTT topic prefix  (topics: <prefix>/<pubkey_prefix>/status|telemetry)
 ; topic_prefix = %s
+
+[update]
+; Enable automatic update checks (default: true)
+; Set to false to disable auto-update.
+; auto_update = true
+
+; Minutes between update checks (default: %.0f)
+; check_interval_mins = %.0f
 `,
 		d.CycleInterval.Seconds(), d.CycleInterval.Seconds(),
 		d.MinDelayBetweenReqs.Seconds(), d.MinDelayBetweenReqs.Seconds(),
@@ -388,5 +409,6 @@ func defaultConfigTemplate() string {
 		d.MQTTHost,
 		d.MQTTPort,
 		d.MQTTTopicPrefix,
+		d.UpdateInterval.Minutes(), d.UpdateInterval.Minutes(),
 	)
 }
