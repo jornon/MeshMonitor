@@ -193,7 +193,7 @@ func BuildBinaryReq(pubKey []byte, reqType byte) []byte {
 }
 
 // BuildNeighboursReq returns a neighbours request using the binary request protocol.
-// Layout: [0x32][pub_key (32 bytes)][0x06][version=1][count=20][offset=0×2][order_by=0][prefix_len=6][tag×4]
+// Layout: [0x32][pub_key×32][0x06][version=0][count][offset×2 LE][order_by][prefix_len][random×4]
 func BuildNeighboursReq(pubKey []byte) []byte {
 	if len(pubKey) != 32 {
 		panic("pubKey must be exactly 32 bytes")
@@ -202,13 +202,23 @@ func BuildNeighboursReq(pubKey []byte) []byte {
 	frame[0] = CmdBinaryReq
 	copy(frame[1:33], pubKey)
 	frame[33] = BinaryReqNeighbours
-	frame[34] = 1  // version
-	frame[35] = 20 // count (max neighbours to return)
-	// offset[36:38] = 0 (first page)
-	frame[38] = 0 // order_by: default
-	frame[39] = 6 // pubkey_prefix_length
-	// tag[40:44] = 0 (random tag, will be overridden by firmware)
+	frame[34] = 0x00 // version: must be 0
+	frame[35] = 255  // count: request all available
+	// offset[36:38] = 0 (first page, LE)
+	frame[38] = 0                                        // order_by: 0=newest first
+	frame[39] = 4                                        // pubkey_prefix_length: 4 bytes
+	binary.LittleEndian.PutUint32(frame[40:44], rand32()) // random blob for uniqueness
 	return frame
+}
+
+// rand32 returns a pseudo-random uint32.
+func rand32() uint32 {
+	return binary.LittleEndian.Uint32([]byte{
+		byte(time.Now().UnixNano()),
+		byte(time.Now().UnixNano() >> 8),
+		byte(time.Now().UnixNano() >> 16),
+		byte(time.Now().UnixNano() >> 24),
+	})
 }
 
 // BuildStatusReq returns a status request using the binary request protocol.

@@ -418,21 +418,30 @@ func (d *Device) RequestNeighbours(pubKey []byte) ([]NeighbourEntry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("neighbours response: %w", err)
 	}
-	return parseNeighboursResponse(data)
+	entries, total, err := parseNeighboursResponse(data)
+	if err != nil {
+		return nil, err
+	}
+	ui.Dimf("[device] neighbours: %d/%d entries\n", len(entries), total)
+	return entries, nil
 }
 
-func parseNeighboursResponse(data []byte) ([]NeighbourEntry, error) {
-	if len(data) < 4 {
-		return nil, fmt.Errorf("neighbours response too short: %d bytes", len(data))
+// parseNeighboursResponse parses the binary response from a NEIGHBOURS request.
+// Layout: [tag×4][neighbours_count×2 LE][results_count×2 LE][entries...]
+// Each entry: [pubkey_prefix×prefixLen][secs_ago×4 LE][snr×1]
+func parseNeighboursResponse(data []byte) ([]NeighbourEntry, int, error) {
+	if len(data) < 8 {
+		return nil, 0, fmt.Errorf("neighbours response too short: %d bytes", len(data))
 	}
-	// total := int(binary.LittleEndian.Uint16(data[0:2]))
-	count := int(binary.LittleEndian.Uint16(data[2:4]))
-	pos := 4
-	prefixLen := 6 // default pubkey prefix length
-	entrySize := prefixLen + 4 + 1 // prefix + secs_ago(4) + snr(1)
+	// data[0:4] = tag/sender_timestamp (skip)
+	totalCount := int(int16(binary.LittleEndian.Uint16(data[4:6])))
+	resultsCount := int(int16(binary.LittleEndian.Uint16(data[6:8])))
+	pos := 8
+	prefixLen := 4 // must match what we requested in BuildNeighboursReq
+	entrySize := prefixLen + 4 + 1
 
 	var entries []NeighbourEntry
-	for i := 0; i < count && pos+entrySize <= len(data); i++ {
+	for i := 0; i < resultsCount && pos+entrySize <= len(data); i++ {
 		prefix := fmt.Sprintf("%x", data[pos:pos+prefixLen])
 		pos += prefixLen
 		secsAgo := int32(binary.LittleEndian.Uint32(data[pos : pos+4]))
@@ -445,7 +454,7 @@ func parseNeighboursResponse(data []byte) ([]NeighbourEntry, error) {
 			SNR:          snr,
 		})
 	}
-	return entries, nil
+	return entries, totalCount, nil
 }
 
 // ---------------------------------------------------------------------------
