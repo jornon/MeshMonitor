@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"math/rand"
 	"os"
 	"os/signal"
 	"strings"
@@ -306,27 +305,49 @@ func main() {
 
 		// -------------------------------------------------------------------
 		// Poll each repeater for status and telemetry
+		//
+		// Requests are spread evenly across the cycle interval to minimise
+		// concentrated traffic on the mesh network.
 		// -------------------------------------------------------------------
 		if ui.Verbose {
 			ui.Section("Collecting repeater data")
 		}
+
+		// Count how many repeaters will actually be polled this cycle.
+		var pollTargets []RepeaterTarget
 		for _, target := range serverResp.Repeaters {
 			hops, known := hopsByKey[target.PublicKey]
 			isNear := known && hops >= 0 && hops <= nearMaxHops
-
 			if !isNear && !pollFar {
 				ui.Verb("→ Skipping %s (%d hops, next far cycle)", target.Name, hops)
 				continue
 			}
+			pollTargets = append(pollTargets, target)
+		}
 
+		// Calculate inter-repeater delay to spread requests across the cycle.
+		interDelay := time.Duration(0)
+		if len(pollTargets) > 1 {
+			interDelay = nearCycleInterval / time.Duration(len(pollTargets))
+			// Cap so we don't wait absurdly long per repeater.
+			if interDelay > 5*time.Minute {
+				interDelay = 5 * time.Minute
+			}
+		}
+		if len(pollTargets) > 0 {
+			ui.Verb("Polling %d repeater(s), interval %s between each", len(pollTargets), interDelay.Truncate(time.Second))
+		}
+
+		for i, target := range pollTargets {
 			pubKey, decErr := hex.DecodeString(target.PublicKey)
 			if decErr != nil || len(pubKey) != 32 {
 				ui.Warn("Skipping %s — invalid public key: %v", target.Name, decErr)
 				continue
 			}
 
+			hops := hopsByKey[target.PublicKey]
 			hopLabel := "?"
-			if known && hops >= 0 {
+			if _, known := hopsByKey[target.PublicKey]; known && hops >= 0 {
 				hopLabel = fmt.Sprintf("%d", hops)
 			}
 
@@ -339,9 +360,6 @@ func main() {
 				} else {
 					needsLogout = true
 					ui.Verb("  Login success: %s", target.Name)
-				}
-				if !sleepOrExit(randomDelay(), sigCh) {
-					return
 				}
 			}
 
@@ -366,13 +384,6 @@ func main() {
 				}
 			}
 
-			if !sleepOrExit(randomDelay(), sigCh) {
-				if needsLogout {
-					device.Logout(pubKey)
-				}
-				return
-			}
-
 			// Telemetry request (only when temperature collection is enabled)
 			if target.CollectTemperature {
 				ui.Verb("→ Telemetry request: %s", target.Name)
@@ -394,8 +405,12 @@ func main() {
 				device.Logout(pubKey)
 			}
 
-			if !sleepOrExit(randomDelay(), sigCh) {
-				return
+			// Wait before the next repeater (skip after the last one).
+			if i < len(pollTargets)-1 && interDelay > 0 {
+				if !ui.Countdown("Next request", interDelay, sigCh) {
+					ui.Info("Shutting down.")
+					return
+				}
 			}
 		}
 		ui.Verb("Cycle %d complete.", cycleNum)
@@ -715,7 +730,3 @@ func sleepOrExit(d time.Duration, sigCh <-chan os.Signal) bool {
 	}
 }
 
-func randomDelay() time.Duration {
-	spread := cfg.MaxDelayBetweenReqs - cfg.MinDelayBetweenReqs
-	return cfg.MinDelayBetweenReqs + time.Duration(rand.Int63n(int64(spread)))
-}
