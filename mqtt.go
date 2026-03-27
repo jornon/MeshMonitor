@@ -54,7 +54,8 @@ func connectMQTT() error {
 }
 
 // PublishStatus publishes a repeater status report to the MQTT broker.
-func PublishStatus(target RepeaterTarget, status *StatusResponse) error {
+// If contactGPS is non-nil, latitude and longitude are included.
+func PublishStatus(target RepeaterTarget, status *StatusResponse, contactGPS *[2]float64) error {
 	topic := fmt.Sprintf("%s/%s/status", cfg.MQTTTopicPrefix, status.PubKeyPrefix)
 	payload := map[string]any{
 		"name":             target.Name,
@@ -78,11 +79,16 @@ func PublishStatus(target RepeaterTarget, status *StatusResponse) error {
 		"rx_air_time_secs": status.RxAirTimeSecs,
 		"recv_errors":      status.RecvErrors,
 	}
+	if contactGPS != nil {
+		payload["latitude"] = contactGPS[0]
+		payload["longitude"] = contactGPS[1]
+	}
 	return publish(topic, payload)
 }
 
 // PublishTelemetry publishes decoded CayenneLPP telemetry data to the MQTT broker.
-func PublishTelemetry(target RepeaterTarget, telem *TelemetryResponse) error {
+// GPS from CayenneLPP takes priority; contactGPS is used as fallback.
+func PublishTelemetry(target RepeaterTarget, telem *TelemetryResponse, contactGPS *[2]float64) error {
 	topic := fmt.Sprintf("%s/%s/telemetry", cfg.MQTTTopicPrefix, telem.PubKeyPrefix)
 	payload := map[string]any{
 		"name":           target.Name,
@@ -90,11 +96,25 @@ func PublishTelemetry(target RepeaterTarget, telem *TelemetryResponse) error {
 		"cayenne_lpp":    telem.RawHex,
 	}
 	// Decode CayenneLPP and add individual fields.
+	hasLPPGPS := false
 	if len(telem.RawData) > 0 {
 		decoded := DecodeCayenneLPP(telem.RawData)
 		for k, v := range CayenneToMap(decoded) {
 			payload[k] = v
 		}
+		// Check for CayenneLPP GPS data.
+		gps := DecodeCayenneGPS(telem.RawData)
+		if gps != nil {
+			payload["latitude"] = gps[0]
+			payload["longitude"] = gps[1]
+			payload["altitude"] = gps[2]
+			hasLPPGPS = true
+		}
+	}
+	// Fall back to contact GPS if no CayenneLPP GPS.
+	if !hasLPPGPS && contactGPS != nil {
+		payload["latitude"] = contactGPS[0]
+		payload["longitude"] = contactGPS[1]
 	}
 	return publish(topic, payload)
 }

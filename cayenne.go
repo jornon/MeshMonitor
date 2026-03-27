@@ -133,6 +133,45 @@ func decodeLPPValue(typeID byte, raw []byte) (float64, string) {
 	}
 }
 
+// DecodeCayenneGPS scans raw CayenneLPP data for a GPS entry (type 0x88).
+// Returns [lat, lon, alt] or nil if no GPS data is present.
+// GPS encoding: 3 bytes lat (signed BE, ÷10000), 3 bytes lon (signed BE, ÷10000),
+// 3 bytes alt (signed BE, ÷100).
+func DecodeCayenneGPS(data []byte) *[3]float64 {
+	for i := 0; i+1 < len(data); {
+		if i+2 > len(data) {
+			break
+		}
+		// channel := data[i]
+		typeID := data[i+1]
+		size := lppTypeSize(typeID)
+		if size == 0 {
+			break
+		}
+		if i+2+size > len(data) {
+			break
+		}
+		if typeID == LPPGPS && size == 9 {
+			raw := data[i+2 : i+2+9]
+			lat := float64(int32(raw[0])<<16|int32(raw[1])<<8|int32(raw[2])) / 10000.0
+			if raw[0]&0x80 != 0 {
+				lat = float64(int32(raw[0])<<16|int32(raw[1])<<8|int32(raw[2])-0x1000000) / 10000.0
+			}
+			lon := float64(int32(raw[3])<<16|int32(raw[4])<<8|int32(raw[5])) / 10000.0
+			if raw[3]&0x80 != 0 {
+				lon = float64(int32(raw[3])<<16|int32(raw[4])<<8|int32(raw[5])-0x1000000) / 10000.0
+			}
+			alt := float64(int32(raw[6])<<16|int32(raw[7])<<8|int32(raw[8])) / 100.0
+			if raw[6]&0x80 != 0 {
+				alt = float64(int32(raw[6])<<16|int32(raw[7])<<8|int32(raw[8])-0x1000000) / 100.0
+			}
+			return &[3]float64{lat, lon, alt}
+		}
+		i += 2 + size
+	}
+	return nil
+}
+
 // CayenneToMap converts decoded CayenneLPP values to a flat map suitable for
 // MQTT publishing. Keys are the type name (e.g. "temperature", "voltage").
 // If multiple channels have the same type, a suffix is added (e.g. "temperature_2").

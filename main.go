@@ -272,10 +272,15 @@ func main() {
 			}
 		}
 
-		// Build hop lookup from contacts.
+		// Build hop and GPS lookups from contacts.
 		hopsByKey := make(map[string]int8, len(contacts))
+		gpsByKey := make(map[string]*[2]float64, len(contacts))
 		for _, c := range contacts {
 			hopsByKey[c.PublicKeyHex] = c.PathLen
+			if c.Lat != 0 || c.Lon != 0 {
+				gps := [2]float64{c.Lat, c.Lon}
+				gpsByKey[c.PublicKeyHex] = &gps
+			}
 		}
 
 		// -------------------------------------------------------------------
@@ -356,7 +361,7 @@ func main() {
 				if ui.Verbose {
 					ui.PrintStatusResult(target, status)
 				}
-				if pubErr := PublishStatus(target, status); pubErr != nil {
+				if pubErr := PublishStatus(target, status, gpsByKey[target.PublicKey]); pubErr != nil {
 					ui.Warn("  MQTT publish failed for %s: %v", target.Name, pubErr)
 				}
 			}
@@ -378,7 +383,7 @@ func main() {
 					if ui.Verbose {
 						ui.PrintTelemetryResult(target, telem)
 					}
-					if pubErr := PublishTelemetry(target, telem); pubErr != nil {
+					if pubErr := PublishTelemetry(target, telem, gpsByKey[target.PublicKey]); pubErr != nil {
 						ui.Warn("  MQTT publish failed for %s: %v", target.Name, pubErr)
 					}
 				}
