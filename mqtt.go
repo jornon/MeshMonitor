@@ -166,17 +166,16 @@ func publish(topic string, payload any) error {
 	if err != nil {
 		return err
 	}
-	broker := fmt.Sprintf("tcp://%s:%d", cfg.MQTTHost, cfg.MQTTPort)
 	token := mqttClient.Publish(topic, 1, false, data)
 	ok := token.WaitTimeout(5 * time.Second)
 	if token.Error() != nil {
-		ui.Verb("[mqtt] FAIL %s → %s: %v", broker, topic, token.Error())
+		ui.Dimf("     📤 ❌ %s: %v\n", topic, token.Error())
 		return fmt.Errorf("mqtt publish: %w", token.Error())
 	}
 	if !ok {
-		ui.Verb("[mqtt] FAIL %s → %s: timeout (not delivered)", broker, topic)
+		ui.Dimf("     📤 ❌ %s: timeout\n", topic)
 		return fmt.Errorf("mqtt publish timeout for %s", topic)
 	}
-	ui.Verb("[mqtt] OK %s → %s (%d bytes)", broker, topic, len(data))
+	ui.Dimf("     📤 %s (%d bytes)\n", topic, len(data))
 	return nil
 }

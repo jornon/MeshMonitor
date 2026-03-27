@@ -327,7 +327,7 @@ func main() {
 			hops, known := hopsByKey[target.PublicKey]
 			isNear := known && hops >= 0 && hops <= nearMaxHops
 			if !isNear && !pollFar {
-				ui.Verb("→ Skipping %s (%d hops, next far cycle)", target.Name, hops)
+				ui.RepeaterSkip(target.Name, fmt.Sprintf("%d hops, next far cycle", hops))
 				continue
 			}
 			pollTargets = append(pollTargets, target)
@@ -359,67 +359,61 @@ func main() {
 				hopLabel = fmt.Sprintf("%d", hops)
 			}
 
+			// ── Repeater header ──
+			ui.RepeaterHeader(i+1, len(pollTargets), target.Name, hopLabel, target.GuestPassword != "")
+
 			// Login if guest password is set for this repeater.
 			needsLogout := false
 			if target.GuestPassword != "" {
-				ui.Verb("→ Login: %s (guest)", target.Name)
 				if loginErr := device.Login(pubKey, target.GuestPassword); loginErr != nil {
-					ui.Warn("  Login failed for %s: %v", target.Name, loginErr)
+					ui.RepeaterLoginFail(loginErr)
 				} else {
 					needsLogout = true
-					ui.Verb("  Login success: %s", target.Name)
+					ui.RepeaterLoginOK()
 				}
 			}
 
-			// Use cached status from path discovery if available.
+			// ── Status ──
 			var status *StatusResponse
 			var statusErr error
 			if s, ok := cached[target.PublicKey]; ok {
 				status = s
-				ui.Verb("→ Status (cached): %s (%s hops)", target.Name, hopLabel)
 			} else {
-				ui.Verb("→ Status request: %s (%s hops)", target.Name, hopLabel)
 				status, statusErr = device.RequestStatus(pubKey)
 			}
 			if statusErr != nil {
-				ui.Warn("  No status response from %s: %v", target.Name, statusErr)
+				ui.RepeaterFail("Status", statusErr)
 			} else if status != nil {
-				if ui.Verbose {
-					ui.PrintStatusResult(target, status)
-				}
+				ui.RepeaterStatus(target.Name, status)
 				if pubErr := PublishStatus(target, status, gpsByKey[target.PublicKey]); pubErr != nil {
-					ui.Warn("  MQTT publish failed for %s: %v", target.Name, pubErr)
+					ui.RepeaterFail("MQTT status", pubErr)
 				}
 			}
 
-			// Pause between status and telemetry to avoid TX queue flooding (#7).
+			// ── Telemetry ──
 			if target.CollectTemperature {
 				time.Sleep(InterRequestDelay)
-				ui.Verb("→ Telemetry request: %s", target.Name)
 				telem, telemErr := device.RequestTelemetry(pubKey)
 				if telemErr != nil {
-					ui.Warn("  No telemetry response from %s: %v", target.Name, telemErr)
+					ui.RepeaterFail("Telemetry", telemErr)
 				} else {
-					if ui.Verbose {
-						ui.PrintTelemetryResult(target, telem)
-					}
+					ui.RepeaterTelemetry(target.Name, telem)
 					if pubErr := PublishTelemetry(target, telem, gpsByKey[target.PublicKey]); pubErr != nil {
-						ui.Warn("  MQTT publish failed for %s: %v", target.Name, pubErr)
+						ui.RepeaterFail("MQTT telemetry", pubErr)
 					}
 				}
 			}
 
-			// Neighbour discovery — request topology data from each repeater.
+			// ── Neighbours ──
 			if pollFar {
 				time.Sleep(InterRequestDelay)
-				ui.Verb("→ Neighbours request: %s", target.Name)
 				neighbours, nErr := device.RequestNeighbours(pubKey)
 				if nErr != nil {
-					ui.Dimf("  No neighbours response from %s: %v\n", target.Name, nErr)
+					ui.Dimf("     🗺️  No neighbours: %v\n", nErr)
 				} else if len(neighbours) > 0 {
-					ui.Verb("  %s has %d neighbour(s)", target.Name, len(neighbours))
+					ui.RepeaterNeighbours(target.Name, neighbours)
 					if pubErr := PublishNeighbours(target, neighbours); pubErr != nil {
-						ui.Warn("  MQTT publish failed for %s neighbours: %v", target.Name, pubErr)
+						ui.RepeaterFail("MQTT neighbours", pubErr)
 					}
 				}
 			}

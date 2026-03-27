@@ -36,19 +36,19 @@ func (u *UI) Banner() {
 }
 
 func (u *UI) Info(format string, args ...any) {
-	fmt.Printf("%s[i]%s %s\n", ansiCyan, ansiReset, fmt.Sprintf(format, args...))
+	fmt.Printf("  💬 %s\n", fmt.Sprintf(format, args...))
 }
 
 func (u *UI) Success(format string, args ...any) {
-	fmt.Printf("%s[✓]%s %s\n", ansiGreen, ansiReset, fmt.Sprintf(format, args...))
+	fmt.Printf("  %s✅ %s%s\n", ansiGreen, fmt.Sprintf(format, args...), ansiReset)
 }
 
 func (u *UI) Warn(format string, args ...any) {
-	fmt.Printf("%s[!]%s %s\n", ansiYellow, ansiReset, fmt.Sprintf(format, args...))
+	fmt.Printf("  %s⚠️  %s%s\n", ansiYellow, fmt.Sprintf(format, args...), ansiReset)
 }
 
 func (u *UI) Error(format string, args ...any) {
-	fmt.Printf("%s[✗]%s %s\n", ansiRed, ansiReset, fmt.Sprintf(format, args...))
+	fmt.Printf("  %s❌ %s%s\n", ansiRed, fmt.Sprintf(format, args...), ansiReset)
 }
 
 func (u *UI) Dimf(format string, args ...any) {
@@ -63,17 +63,116 @@ func (u *UI) Verb(format string, args ...any) {
 	if !u.Verbose {
 		return
 	}
-	fmt.Printf("%s[i]%s %s\n", ansiCyan, ansiReset, fmt.Sprintf(format, args...))
+	fmt.Printf("  💬 %s\n", fmt.Sprintf(format, args...))
 }
 
 func (u *UI) Section(title string) {
 	fmt.Println()
-	fmt.Printf("%s%s── %s %s%s\n", ansiBold, ansiWhite, title, strings.Repeat("─", max(0, 40-len(title))), ansiReset)
+	fmt.Printf("%s%s━━ %s %s%s\n", ansiBold, ansiWhite, title, strings.Repeat("━", max(0, 40-len(title))), ansiReset)
 }
 
 func (u *UI) Prompt(msg string) {
 	fmt.Printf("%s%s?%s %s: ", ansiBold, ansiYellow, ansiReset, msg)
 }
+
+// ---------------------------------------------------------------------------
+// Repeater-grouped output
+// ---------------------------------------------------------------------------
+
+// RepeaterHeader prints a header line for a repeater being polled.
+func (u *UI) RepeaterHeader(index, total int, name, hopLabel string, hasLogin bool) {
+	if !u.Verbose {
+		return
+	}
+	lock := ""
+	if hasLogin {
+		lock = " 🔑"
+	}
+	fmt.Printf("\n  %s📡 [%d/%d] %s%s%s  (%s hops)%s\n",
+		ansiCyan, index, total, ansiBold, name, ansiReset, hopLabel, lock)
+}
+
+// RepeaterStatus prints the status result for a repeater.
+func (u *UI) RepeaterStatus(name string, s *StatusResponse) {
+	batt := float64(s.BattMilliVolts) / 1000.0
+	battIcon := "🔋"
+	if batt < 3.5 {
+		battIcon = "🪫"
+	}
+	fmt.Printf("     %s %.2fV  📶 %ddBm  SNR %.1fdB  ⏱️ %s  📦 %d pkts\n",
+		battIcon, batt,
+		s.LastRSSI,
+		float64(s.LastSNRx4)/4.0,
+		formatDuration(time.Duration(s.UpTimeSecs)*time.Second),
+		s.PacketsRecv,
+	)
+}
+
+// RepeaterTelemetry prints a telemetry result.
+func (u *UI) RepeaterTelemetry(name string, t *TelemetryResponse) {
+	decoded := DecodeCayenneLPP(t.RawData)
+	parts := []string{}
+	for _, v := range decoded {
+		switch v.TypeName {
+		case "temperature":
+			parts = append(parts, fmt.Sprintf("🌡️ %.1f°C", v.Value))
+		case "humidity":
+			parts = append(parts, fmt.Sprintf("💧 %.0f%%", v.Value))
+		case "voltage":
+			parts = append(parts, fmt.Sprintf("⚡ %.2fV", v.Value))
+		case "barometer":
+			parts = append(parts, fmt.Sprintf("🌀 %.1f hPa", v.Value))
+		default:
+			parts = append(parts, fmt.Sprintf("%s=%.1f", v.TypeName, v.Value))
+		}
+	}
+	if len(parts) > 0 {
+		fmt.Printf("     %s\n", strings.Join(parts, "  "))
+	} else {
+		fmt.Printf("     📊 %d bytes telemetry\n", len(t.RawData))
+	}
+}
+
+// RepeaterNeighbours prints neighbour discovery results.
+func (u *UI) RepeaterNeighbours(name string, neighbours []NeighbourEntry) {
+	fmt.Printf("     🗺️  %d neighbour(s):", len(neighbours))
+	for _, n := range neighbours {
+		fmt.Printf(" [%s %.1fdB]", n.PubKeyPrefix, n.SNR)
+	}
+	fmt.Println()
+}
+
+// RepeaterLoginOK prints a login success message.
+func (u *UI) RepeaterLoginOK() {
+	fmt.Printf("     🔓 Login OK\n")
+}
+
+// RepeaterLoginFail prints a login failure message.
+func (u *UI) RepeaterLoginFail(err error) {
+	fmt.Printf("     %s🔒 Login failed: %v%s\n", ansiYellow, err, ansiReset)
+}
+
+// RepeaterSkip prints a skip message for a repeater.
+func (u *UI) RepeaterSkip(name string, reason string) {
+	if !u.Verbose {
+		return
+	}
+	fmt.Printf("  %s⏭️  %s — %s%s\n", ansiDim, name, reason, ansiReset)
+}
+
+// RepeaterFail prints a failure for a specific operation.
+func (u *UI) RepeaterFail(operation string, err error) {
+	fmt.Printf("     %s❌ %s: %v%s\n", ansiYellow, operation, err, ansiReset)
+}
+
+// RepeaterMQTT prints MQTT publish confirmation.
+func (u *UI) RepeaterMQTT(topic string, bytes int) {
+	fmt.Printf("     %s📤 → %s (%d bytes)%s\n", ansiDim, topic, bytes, ansiReset)
+}
+
+// ---------------------------------------------------------------------------
+// Tables and lists
+// ---------------------------------------------------------------------------
 
 // PrintPorts displays the list of serial ports in a simple table.
 func (u *UI) PrintPorts(ports []string) {
@@ -89,7 +188,7 @@ func (u *UI) PrintPorts(ports []string) {
 
 // PrintSelfInfo displays device identity information.
 func (u *UI) PrintSelfInfo(info *SelfInfo, devInfo *DeviceInfo) {
-	u.Section("Device Info")
+	u.Section("🔌 Device Info")
 	fmt.Printf("  Name:       %s%s%s\n", ansiBold, info.Name, ansiReset)
 	fmt.Printf("  Type:       %s\n", AdvTypeNames[info.AdvType])
 	fmt.Printf("  Public key: %s...%s\n", info.PublicKeyHex[:12], info.PublicKeyHex[len(info.PublicKeyHex)-8:])
@@ -114,7 +213,7 @@ func (u *UI) PrintContacts(contacts []*Contact) {
 			repeaters = append(repeaters, c)
 		}
 	}
-	u.Section(fmt.Sprintf("Repeaters (%d of %d contacts)", len(repeaters), len(contacts)))
+	u.Section(fmt.Sprintf("📋 Repeaters (%d of %d contacts)", len(repeaters), len(contacts)))
 	if len(repeaters) == 0 {
 		u.Warn("No repeaters found.")
 		return
@@ -142,45 +241,33 @@ func (u *UI) PrintContacts(contacts []*Contact) {
 
 // PrintRepeaterTargets displays the repeaters returned by the server.
 func (u *UI) PrintRepeaterTargets(targets []RepeaterTarget) {
-	u.Section(fmt.Sprintf("Repeaters to monitor (%d)", len(targets)))
+	u.Section(fmt.Sprintf("🎯 Repeaters to monitor (%d)", len(targets)))
 	for i, t := range targets {
 		fmt.Printf("  %d. %s%s%s  (%s...)\n", i+1, ansiBold, t.Name, ansiReset, t.PublicKey[:12])
 	}
 }
 
-// PrintStatusResult displays a status response inline.
+// PrintStatusResult displays a status response inline (legacy, used when not in grouped mode).
 func (u *UI) PrintStatusResult(target RepeaterTarget, s *StatusResponse) {
-	fmt.Printf("  %s%s%s  batt=%.2fV  RSSI=%ddBm  SNR=%.1fdB  up=%s  pkts_recv=%d\n",
-		ansiGreen, target.Name, ansiReset,
-		float64(s.BattMilliVolts)/1000.0,
-		s.LastRSSI,
-		float64(s.LastSNRx4)/4.0,
-		formatDuration(time.Duration(s.UpTimeSecs)*time.Second),
-		s.PacketsRecv,
-	)
+	u.RepeaterStatus(target.Name, s)
 }
 
-// PrintTelemetryResult displays a telemetry response inline.
+// PrintTelemetryResult displays a telemetry response inline (legacy).
 func (u *UI) PrintTelemetryResult(target RepeaterTarget, t *TelemetryResponse) {
-	fmt.Printf("  %s%s%s  telemetry=%d bytes (%s...)\n",
-		ansiGreen, target.Name, ansiReset,
-		len(t.RawData),
-		func() string {
-			if len(t.RawHex) > 16 {
-				return t.RawHex[:16]
-			}
-			return t.RawHex
-		}(),
-	)
+	u.RepeaterTelemetry(target.Name, t)
 }
+
+// ---------------------------------------------------------------------------
+// Timers
+// ---------------------------------------------------------------------------
 
 // Countdown shows a live countdown in-place. Returns false if interrupted by signal.
 func (u *UI) Countdown(label string, d time.Duration, sigCh <-chan os.Signal) bool {
 	end := time.Now().Add(d)
 	for time.Now().Before(end) {
 		remaining := time.Until(end).Truncate(time.Second)
-		fmt.Printf("\r%s[i]%s %s — next cycle in %s   ",
-			ansiCyan, ansiReset, label, remaining)
+		fmt.Printf("\r  ⏳ %s — %s   ",
+			label, remaining)
 		select {
 		case <-sigCh:
 			fmt.Printf("\r%s\r", strings.Repeat(" ", 70))
@@ -199,7 +286,7 @@ func (u *UI) WaitWithSpinner(label string, d time.Duration, sigCh <-chan os.Sign
 	i := 0
 	for time.Now().Before(end) {
 		remaining := time.Until(end).Truncate(time.Second)
-		fmt.Printf("\r%s%s%s %s (%s)   ",
+		fmt.Printf("\r  %s%s%s %s (%s)   ",
 			ansiCyan, frames[i%len(frames)], ansiReset, label, remaining)
 		select {
 		case <-sigCh:

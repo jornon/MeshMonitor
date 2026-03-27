@@ -344,7 +344,7 @@ func (d *Device) RequestStatus(pubKey []byte) (*StatusResponse, error) {
 	for attempt := 1; attempt <= MaxRequestRetries; attempt++ {
 		// On the last attempt, reset path to force flood routing.
 		if attempt == MaxRequestRetries {
-			ui.Dimf("[device] resetting path for retry %d\n", attempt)
+			ui.Dimf("     🔄 Resetting path for retry %d\n", attempt)
 			_ = d.ResetPath(pubKey)
 		}
 
@@ -358,7 +358,7 @@ func (d *Device) RequestStatus(pubKey []byte) (*StatusResponse, error) {
 		if err != nil {
 			lastErr = fmt.Errorf("status response: %w", err)
 			if attempt < MaxRequestRetries {
-				ui.Dimf("[device] status attempt %d failed, retrying...\n", attempt)
+				ui.Dimf("     🔄 Status attempt %d failed, retrying...\n", attempt)
 			}
 			continue
 		}
@@ -386,7 +386,7 @@ func (d *Device) RequestTelemetry(pubKey []byte) (*TelemetryResponse, error) {
 		if err != nil {
 			lastErr = fmt.Errorf("telemetry response: %w", err)
 			if attempt < MaxRequestRetries {
-				ui.Dimf("[device] telemetry attempt %d failed, retrying...\n", attempt)
+				ui.Dimf("     🔄 Telemetry attempt %d failed, retrying...\n", attempt)
 			}
 			continue
 		}
