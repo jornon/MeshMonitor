@@ -56,7 +56,7 @@ func NewSerialProtocol(portName string) (*SerialProtocol, error) {
 	sp := &SerialProtocol{
 		port:       p,
 		responseCh: make(chan []byte, 32),
-		pushCh:     make(chan []byte, 128),
+		pushCh:     make(chan []byte, 256),
 		done:       make(chan struct{}),
 	}
 	sp.wg.Add(1)
@@ -73,8 +73,8 @@ func NewSerialProtocol(portName string) (*SerialProtocol, error) {
 
 // SendFrame writes a framed payload to the device.
 func (sp *SerialProtocol) SendFrame(payload []byte) error {
-	if len(payload) > MaxFrameSize {
-		return fmt.Errorf("payload too large: %d > %d", len(payload), MaxFrameSize)
+	if len(payload) > MaxTxFrameSize {
+		return fmt.Errorf("payload too large: %d > %d", len(payload), MaxTxFrameSize)
 	}
 	header := []byte{txMarker, byte(len(payload) & 0xFF), byte(len(payload) >> 8)}
 	sp.mu.Lock()
@@ -163,6 +163,47 @@ func (sp *SerialProtocol) WaitPush(code byte, timeout time.Duration) ([]byte, er
 		}
 	}
 	return nil, fmt.Errorf("timeout waiting for push code 0x%02X", code)
+}
+
+// WaitPushMulti blocks until a push frame matching any of the given codes arrives.
+// Returns the frame and nil, or nil and an error on timeout.
+func (sp *SerialProtocol) WaitPushMulti(codes []byte, timeout time.Duration) ([]byte, error) {
+	deadline := time.Now().Add(timeout)
+	var pending [][]byte
+
+	defer func() {
+		for _, p := range pending {
+			select {
+			case sp.pushCh <- p:
+			default:
+			}
+		}
+	}()
+
+	codeSet := make(map[byte]bool, len(codes))
+	for _, c := range codes {
+		codeSet[c] = true
+	}
+
+	for time.Now().Before(deadline) {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		tick := remaining
+		if tick > 500*time.Millisecond {
+			tick = 500 * time.Millisecond
+		}
+		select {
+		case frame := <-sp.pushCh:
+			if codeSet[frame[0]] {
+				return frame, nil
+			}
+			pending = append(pending, frame)
+		case <-time.After(tick):
+		}
+	}
+	return nil, fmt.Errorf("timeout waiting for push codes %v", codes)
 }
 
 // Flush discards all frames currently buffered in both channels.
@@ -263,7 +304,7 @@ func (sp *SerialProtocol) readerLoop() {
 				}
 				frameLen |= int(buf[0]) << 8
 				buf = buf[1:]
-				if frameLen == 0 || frameLen > MaxFrameSize {
+				if frameLen == 0 || frameLen > MaxRxFrameSize {
 					state = stateIdle
 				} else {
 					state = stateData

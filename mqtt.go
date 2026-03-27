@@ -119,6 +119,45 @@ func PublishTelemetry(target RepeaterTarget, telem *TelemetryResponse, contactGP
 	return publish(topic, payload)
 }
 
+// PublishNeighbours publishes a repeater's neighbour list to the MQTT broker.
+func PublishNeighbours(target RepeaterTarget, neighbours []NeighbourEntry) error {
+	prefix := target.PublicKey
+	if len(prefix) > 12 {
+		prefix = prefix[:12]
+	}
+	topic := fmt.Sprintf("%s/%s/neighbours", cfg.MQTTTopicPrefix, prefix)
+	type neighbourJSON struct {
+		PubKeyPrefix string  `json:"pub_key_prefix"`
+		SecsAgo      int32   `json:"secs_ago"`
+		SNR          float64 `json:"snr_db"`
+	}
+	var entries []neighbourJSON
+	for _, n := range neighbours {
+		entries = append(entries, neighbourJSON{
+			PubKeyPrefix: n.PubKeyPrefix,
+			SecsAgo:      n.SecsAgo,
+			SNR:          n.SNR,
+		})
+	}
+	payload := map[string]any{
+		"name":       target.Name,
+		"pub_key":    target.PublicKey,
+		"neighbours": entries,
+	}
+	return publish(topic, payload)
+}
+
+// PublishCompanionStats publishes the companion device's own status.
+func PublishCompanionStats(battMV uint16, selfInfo *SelfInfo) error {
+	topic := fmt.Sprintf("%s/companion/status", cfg.MQTTTopicPrefix)
+	payload := map[string]any{
+		"name":             selfInfo.Name,
+		"pub_key":          selfInfo.PublicKeyHex,
+		"batt_milli_volts": battMV,
+	}
+	return publish(topic, payload)
+}
+
 func publish(topic string, payload any) error {
 	if err := connectMQTT(); err != nil {
 		return err

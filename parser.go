@@ -187,63 +187,9 @@ func ParseContact(frame []byte) (*Contact, error) {
 	return c, nil
 }
 
-// ParseStatusResponse parses a PUSH_CODE_STATUS_RESPONSE frame.
-// Layout: [0x87][reserved][pub_key_prefix×6][RepeaterStats (56 bytes)]
-func ParseStatusResponse(frame []byte) (*StatusResponse, error) {
-	const statsSize = 56
-	const minLen = 2 + 6 + statsSize // 64
-	if len(frame) < minLen {
-		return nil, fmt.Errorf("status frame too short: %d < %d", len(frame), minLen)
-	}
-	if frame[0] != PushCodeStatusResponse {
-		return nil, fmt.Errorf("unexpected push code: 0x%02X", frame[0])
-	}
-	r := &StatusResponse{}
-	r.PubKeyPrefix = hex.EncodeToString(frame[2:8])
-
-	stats := frame[8:]
-	rd := bytes.NewReader(stats)
-	if err := binary.Read(rd, binary.LittleEndian, &r.BattMilliVolts); err != nil {
-		return nil, err
-	}
-	binary.Read(rd, binary.LittleEndian, &r.TxQueueLen)
-	binary.Read(rd, binary.LittleEndian, &r.NoiseFloor)
-	binary.Read(rd, binary.LittleEndian, &r.LastRSSI)
-	binary.Read(rd, binary.LittleEndian, &r.PacketsRecv)
-	binary.Read(rd, binary.LittleEndian, &r.PacketsSent)
-	binary.Read(rd, binary.LittleEndian, &r.AirTimeSecs)
-	binary.Read(rd, binary.LittleEndian, &r.UpTimeSecs)
-	binary.Read(rd, binary.LittleEndian, &r.SentFlood)
-	binary.Read(rd, binary.LittleEndian, &r.SentDirect)
-	binary.Read(rd, binary.LittleEndian, &r.RecvFlood)
-	binary.Read(rd, binary.LittleEndian, &r.RecvDirect)
-	binary.Read(rd, binary.LittleEndian, &r.ErrEvents)
-	binary.Read(rd, binary.LittleEndian, &r.LastSNRx4)
-	binary.Read(rd, binary.LittleEndian, &r.DirectDups)
-	binary.Read(rd, binary.LittleEndian, &r.FloodDups)
-	binary.Read(rd, binary.LittleEndian, &r.RxAirTimeSecs)
-	binary.Read(rd, binary.LittleEndian, &r.RecvErrors)
-	return r, nil
-}
-
-// ParseTelemetryResponse parses a PUSH_CODE_TELEMETRY_RESPONSE frame.
-// Layout: [0x8B][reserved][pub_key_prefix×6][CayenneLPP data...]
-func ParseTelemetryResponse(frame []byte) (*TelemetryResponse, error) {
-	if len(frame) < 8 {
-		return nil, fmt.Errorf("telemetry frame too short: %d bytes", len(frame))
-	}
-	if frame[0] != PushCodeTelemetryResponse {
-		return nil, fmt.Errorf("unexpected push code: 0x%02X", frame[0])
-	}
-	r := &TelemetryResponse{}
-	r.PubKeyPrefix = hex.EncodeToString(frame[2:8])
-	if len(frame) > 8 {
-		r.RawData = make([]byte, len(frame)-8)
-		copy(r.RawData, frame[8:])
-		r.RawHex = hex.EncodeToString(r.RawData)
-	}
-	return r, nil
-}
+// Legacy ParseStatusResponse and ParseTelemetryResponse removed.
+// The binary request protocol (CMD_BINARY_REQ 0x32 → PUSH_BINARY_RESPONSE 0x8C)
+// is used instead, with ParseBinaryStatusResponse and ParseBinaryTelemetryResponse.
 
 // ParseBinaryStatusResponse parses status data from a binary response (0x8C).
 // The data is the raw RepeaterStats struct with no header.

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
 	"sync"
 	"time"
@@ -143,8 +144,40 @@ func (d *Device) SendAdvert() error {
 	return nil
 }
 
+// ---------------------------------------------------------------------------
+// parseSentResponse extracts the tag and suggested timeout from RESP_SENT.
+// Layout: [0x06][type 1][expected_ack 4][suggested_timeout 4]
+// ---------------------------------------------------------------------------
+
+type sentResponse struct {
+	Tag              []byte
+	SuggestedTimeout time.Duration
+}
+
+func parseSentResponse(resp []byte) *sentResponse {
+	if len(resp) < 1 || resp[0] != RespCodeSent {
+		return nil
+	}
+	sr := &sentResponse{}
+	if len(resp) >= 6 {
+		sr.Tag = resp[2:6]
+	}
+	if len(resp) >= 10 {
+		ms := binary.LittleEndian.Uint32(resp[6:10])
+		scaled := time.Duration(ms) * time.Millisecond / SuggestedTimeoutDivisor * 1000
+		if scaled < MinAsyncTimeout {
+			scaled = MinAsyncTimeout
+		}
+		sr.SuggestedTimeout = scaled
+	} else {
+		sr.SuggestedTimeout = cfg.StatusTimeout // fallback
+	}
+	return sr
+}
+
 // Login authenticates with a repeater using the given guest password.
 // Returns nil on success, error on failure or timeout.
+// Handles both LOGIN_SUCCESS (0x85) and LOGIN_FAILED (0x86) push codes.
 func (d *Device) Login(pubKey []byte, password string) error {
 	d.mu.Lock()
 	err := d.proto.SendFrame(BuildLogin(pubKey, password))
@@ -162,13 +195,23 @@ func (d *Device) Login(pubKey []byte, password string) error {
 		return fmt.Errorf("device rejected login command")
 	}
 
+	// Use suggested timeout from RESP_SENT if available.
+	timeout := cfg.StatusTimeout
+	if sr := parseSentResponse(resp); sr != nil && sr.SuggestedTimeout > 0 {
+		timeout = sr.SuggestedTimeout
+	}
+
 	// Wait for LOGIN_SUCCESS or LOGIN_FAILED push.
-	push, err := d.proto.WaitPush(PushCodeLoginSuccess, cfg.StatusTimeout)
+	push, err := d.proto.WaitPushMulti(
+		[]byte{PushCodeLoginSuccess, PushCodeLoginFailed},
+		timeout,
+	)
 	if err != nil {
-		// Check if we got a LOGIN_FAILED instead.
 		return fmt.Errorf("login failed or timed out: %w", err)
 	}
-	_ = push
+	if push[0] == PushCodeLoginFailed {
+		return fmt.Errorf("login rejected by repeater")
+	}
 	return nil
 }
 
@@ -200,9 +243,8 @@ func (d *Device) ResetPath(pubKey []byte) error {
 	return nil
 }
 
-// PathDiscovery sends a path discovery request for the given repeater.
-// This triggers the mesh routing layer to find a path without requiring
-// a full status exchange.
+// PathDiscovery sends a path discovery request for the given repeater and
+// waits for the PUSH_PATH_DISCOVERY_RESP to confirm the path was found.
 func (d *Device) PathDiscovery(pubKey []byte) error {
 	d.mu.Lock()
 	err := d.proto.SendFrame(BuildPathDiscovery(pubKey))
@@ -219,11 +261,26 @@ func (d *Device) PathDiscovery(pubKey []byte) error {
 	if resp[0] == RespCodeErr {
 		return fmt.Errorf("device rejected path discovery")
 	}
+
+	// Wait for the path discovery push response.
+	timeout := cfg.StatusTimeout
+	if sr := parseSentResponse(resp); sr != nil && sr.SuggestedTimeout > 0 {
+		// Path discovery uses the most generous timeout scaling.
+		timeout = sr.SuggestedTimeout * 4 / 3
+	}
+	_, pushErr := d.proto.WaitPush(PushCodePathDiscoveryResp, timeout)
+	if pushErr != nil {
+		return fmt.Errorf("path discovery response: %w", pushErr)
+	}
 	return nil
 }
 
-// sendBinaryReq sends a binary request and returns the expected_ack tag from the SENT response.
-func (d *Device) sendBinaryReq(frame []byte) ([]byte, error) {
+// ---------------------------------------------------------------------------
+// Binary request protocol (status, telemetry, neighbours)
+// ---------------------------------------------------------------------------
+
+// sendBinaryReq sends a binary request and returns the parsed RESP_SENT data.
+func (d *Device) sendBinaryReq(frame []byte) (*sentResponse, error) {
 	d.mu.Lock()
 	err := d.proto.SendFrame(frame)
 	if err != nil {
@@ -239,18 +296,19 @@ func (d *Device) sendBinaryReq(frame []byte) ([]byte, error) {
 	if resp[0] == RespCodeErr {
 		return nil, fmt.Errorf("device rejected request")
 	}
-	// RespCodeSent (0x06): [0x06][type 1][expected_ack 4][suggested_timeout 4]
-	if resp[0] == RespCodeSent && len(resp) >= 6 {
-		return resp[2:6], nil
-	}
-	return nil, nil
+	return parseSentResponse(resp), nil
 }
 
 // waitBinaryResponse waits for a BINARY_RESPONSE push (0x8C) whose tag matches
 // the expected_ack returned by sendBinaryReq. Responses with non-matching tags
 // (late replies from previous requests) are discarded.
 // Frame layout: [0x8C](1) [reserved](1) [tag](4) [response_data...]
-func (d *Device) waitBinaryResponse(expectedTag []byte, timeout time.Duration) ([]byte, error) {
+func (d *Device) waitBinaryResponse(sr *sentResponse, fallbackTimeout time.Duration) ([]byte, error) {
+	timeout := fallbackTimeout
+	if sr != nil && sr.SuggestedTimeout > 0 {
+		timeout = sr.SuggestedTimeout
+	}
+
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		remaining := time.Until(deadline)
@@ -265,11 +323,11 @@ func (d *Device) waitBinaryResponse(expectedTag []byte, timeout time.Duration) (
 			return nil, fmt.Errorf("binary response too short: %d bytes", len(push))
 		}
 		// If we have an expected tag, verify it matches.
-		if len(expectedTag) == 4 {
+		if sr != nil && len(sr.Tag) == 4 {
 			tag := push[2:6]
-			if tag[0] != expectedTag[0] || tag[1] != expectedTag[1] ||
-				tag[2] != expectedTag[2] || tag[3] != expectedTag[3] {
-				ui.Dimf("[device] discarding stale binary response (tag %x, want %x)\n", tag, expectedTag)
+			if tag[0] != sr.Tag[0] || tag[1] != sr.Tag[1] ||
+				tag[2] != sr.Tag[2] || tag[3] != sr.Tag[3] {
+				ui.Dimf("[device] discarding stale binary response (tag %x, want %x)\n", tag, sr.Tag)
 				continue
 			}
 		}
@@ -279,31 +337,144 @@ func (d *Device) waitBinaryResponse(expectedTag []byte, timeout time.Duration) (
 }
 
 // RequestStatus sends a status request to the given repeater (by 32-byte public key)
-// and waits for the push response. Returns an error if no response arrives within the timeout.
+// and waits for the push response. Retries up to MaxRequestRetries times, resetting
+// the path on the final attempt to force flood routing.
 func (d *Device) RequestStatus(pubKey []byte) (*StatusResponse, error) {
-	tag, err := d.sendBinaryReq(BuildStatusReq(pubKey))
-	if err != nil {
-		return nil, fmt.Errorf("status request: %w", err)
-	}
+	var lastErr error
+	for attempt := 1; attempt <= MaxRequestRetries; attempt++ {
+		// On the last attempt, reset path to force flood routing.
+		if attempt == MaxRequestRetries {
+			ui.Dimf("[device] resetting path for retry %d\n", attempt)
+			_ = d.ResetPath(pubKey)
+		}
 
-	data, err := d.waitBinaryResponse(tag, cfg.StatusTimeout)
-	if err != nil {
-		return nil, fmt.Errorf("status response: %w", err)
+		sr, err := d.sendBinaryReq(BuildStatusReq(pubKey))
+		if err != nil {
+			lastErr = fmt.Errorf("status request: %w", err)
+			continue
+		}
+
+		data, err := d.waitBinaryResponse(sr, cfg.StatusTimeout)
+		if err != nil {
+			lastErr = fmt.Errorf("status response: %w", err)
+			if attempt < MaxRequestRetries {
+				ui.Dimf("[device] status attempt %d failed, retrying...\n", attempt)
+			}
+			continue
+		}
+		return ParseBinaryStatusResponse(data, pubKey[:6])
 	}
-	return ParseBinaryStatusResponse(data, pubKey[:6])
+	return nil, lastErr
 }
 
 // RequestTelemetry sends a telemetry request to the given contact (by 32-byte public key)
-// and waits for the push response.
+// and waits for the push response. Retries up to MaxRequestRetries times.
 func (d *Device) RequestTelemetry(pubKey []byte) (*TelemetryResponse, error) {
-	tag, err := d.sendBinaryReq(BuildTelemetryReq(pubKey))
+	var lastErr error
+	for attempt := 1; attempt <= MaxRequestRetries; attempt++ {
+		if attempt == MaxRequestRetries {
+			_ = d.ResetPath(pubKey)
+		}
+
+		sr, err := d.sendBinaryReq(BuildTelemetryReq(pubKey))
+		if err != nil {
+			lastErr = fmt.Errorf("telemetry request: %w", err)
+			continue
+		}
+
+		data, err := d.waitBinaryResponse(sr, cfg.TelemetryTimeout)
+		if err != nil {
+			lastErr = fmt.Errorf("telemetry response: %w", err)
+			if attempt < MaxRequestRetries {
+				ui.Dimf("[device] telemetry attempt %d failed, retrying...\n", attempt)
+			}
+			continue
+		}
+		return ParseBinaryTelemetryResponse(data, pubKey[:6])
+	}
+	return nil, lastErr
+}
+
+// ---------------------------------------------------------------------------
+// Neighbour discovery (#5)
+// ---------------------------------------------------------------------------
+
+// NeighbourEntry holds one neighbour from a NEIGHBOURS binary response.
+type NeighbourEntry struct {
+	PubKeyPrefix string
+	SecsAgo      int32
+	SNR          float64
+}
+
+// RequestNeighbours queries a repeater for its neighbour list.
+func (d *Device) RequestNeighbours(pubKey []byte) ([]NeighbourEntry, error) {
+	frame := BuildNeighboursReq(pubKey)
+	sr, err := d.sendBinaryReq(frame)
 	if err != nil {
-		return nil, fmt.Errorf("telemetry request: %w", err)
+		return nil, fmt.Errorf("neighbours request: %w", err)
 	}
 
-	data, err := d.waitBinaryResponse(tag, cfg.TelemetryTimeout)
+	data, err := d.waitBinaryResponse(sr, cfg.StatusTimeout)
 	if err != nil {
-		return nil, fmt.Errorf("telemetry response: %w", err)
+		return nil, fmt.Errorf("neighbours response: %w", err)
 	}
-	return ParseBinaryTelemetryResponse(data, pubKey[:6])
+	return parseNeighboursResponse(data)
+}
+
+func parseNeighboursResponse(data []byte) ([]NeighbourEntry, error) {
+	if len(data) < 4 {
+		return nil, fmt.Errorf("neighbours response too short: %d bytes", len(data))
+	}
+	// total := int(binary.LittleEndian.Uint16(data[0:2]))
+	count := int(binary.LittleEndian.Uint16(data[2:4]))
+	pos := 4
+	prefixLen := 6 // default pubkey prefix length
+	entrySize := prefixLen + 4 + 1 // prefix + secs_ago(4) + snr(1)
+
+	var entries []NeighbourEntry
+	for i := 0; i < count && pos+entrySize <= len(data); i++ {
+		prefix := fmt.Sprintf("%x", data[pos:pos+prefixLen])
+		pos += prefixLen
+		secsAgo := int32(binary.LittleEndian.Uint32(data[pos : pos+4]))
+		pos += 4
+		snr := float64(int8(data[pos])) / 4.0
+		pos++
+		entries = append(entries, NeighbourEntry{
+			PubKeyPrefix: prefix,
+			SecsAgo:      secsAgo,
+			SNR:          snr,
+		})
+	}
+	return entries, nil
+}
+
+// ---------------------------------------------------------------------------
+// Companion node stats (#6)
+// ---------------------------------------------------------------------------
+
+// CompanionStats holds local companion device statistics.
+type CompanionStats struct {
+	BattMilliVolts uint16
+	UptimeSecs     uint32
+	ErrFlags       uint16
+	QueueLen       uint8
+}
+
+// GetBattAndStorage queries the companion node's battery and storage.
+func (d *Device) GetBattAndStorage() (uint16, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if err := d.proto.SendFrame([]byte{CmdGetBattAndStorage}); err != nil {
+		return 0, fmt.Errorf("send batt query: %w", err)
+	}
+	resp, err := d.proto.WaitResponseCode(RespCodeBattAndStorage, CommandResponseTimeout)
+	if err != nil {
+		return 0, fmt.Errorf("batt response: %w", err)
+	}
+	if len(resp) < 3 {
+		return 0, fmt.Errorf("batt response too short")
+	}
+	mv := binary.LittleEndian.Uint16(resp[1:3])
+	return mv, nil
 }

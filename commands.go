@@ -19,6 +19,7 @@ const (
 	CmdSyncNextMessage   = 0x0A
 	CmdResetPath         = 0x0D // decimal 13
 	CmdRemoveContact     = 0x0F // decimal 15
+	CmdGetBattAndStorage = 0x14 // decimal 20
 	CmdDeviceQuery       = 0x16
 	CmdSendLogin         = 0x1A // decimal 26
 	CmdSendStatusReq     = 0x1B // decimal 27 (deprecated)
@@ -28,8 +29,9 @@ const (
 	CmdPathDiscovery     = 0x34 // decimal 52
 
 	// Binary request sub-types (used with CmdBinaryReq)
-	BinaryReqStatus    = 0x01
-	BinaryReqTelemetry = 0x03
+	BinaryReqStatus     = 0x01
+	BinaryReqTelemetry  = 0x03
+	BinaryReqNeighbours = 0x06
 )
 
 // ---------------------------------------------------------------------------
@@ -62,6 +64,9 @@ const (
 	PushCodeTelemetryResponse = 0x8B // legacy
 	PushCodeBinaryResponse    = 0x8C
 	PushCodePathDiscoveryResp = 0x8D
+	PushCodeControlData       = 0x8E
+	PushCodeContactDeleted    = 0x8F
+	PushCodeContactsFull      = 0x90
 )
 
 // ---------------------------------------------------------------------------
@@ -184,6 +189,25 @@ func BuildBinaryReq(pubKey []byte, reqType byte) []byte {
 	frame[0] = CmdBinaryReq
 	copy(frame[1:33], pubKey)
 	frame[33] = reqType
+	return frame
+}
+
+// BuildNeighboursReq returns a neighbours request using the binary request protocol.
+// Layout: [0x32][pub_key (32 bytes)][0x06][version=1][count=20][offset=0×2][order_by=0][prefix_len=6][tag×4]
+func BuildNeighboursReq(pubKey []byte) []byte {
+	if len(pubKey) != 32 {
+		panic("pubKey must be exactly 32 bytes")
+	}
+	frame := make([]byte, 44)
+	frame[0] = CmdBinaryReq
+	copy(frame[1:33], pubKey)
+	frame[33] = BinaryReqNeighbours
+	frame[34] = 1  // version
+	frame[35] = 20 // count (max neighbours to return)
+	// offset[36:38] = 0 (first page)
+	frame[38] = 0 // order_by: default
+	frame[39] = 6 // pubkey_prefix_length
+	// tag[40:44] = 0 (random tag, will be overridden by firmware)
 	return frame
 }
 

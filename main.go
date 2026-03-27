@@ -233,6 +233,14 @@ func main() {
 			continue
 		}
 
+		// Query and publish companion node battery (#6).
+		if battMV, battErr := device.GetBattAndStorage(); battErr == nil {
+			ui.Verb("Companion battery: %dmV", battMV)
+			if pubErr := PublishCompanionStats(battMV, selfInfo); pubErr != nil {
+				ui.Dimf("[mqtt] companion stats publish failed: %v\n", pubErr)
+			}
+		}
+
 		// -------------------------------------------------------------------
 		// Collect contacts; advertise and retry if none found
 		// -------------------------------------------------------------------
@@ -384,8 +392,9 @@ func main() {
 				}
 			}
 
-			// Telemetry request (only when temperature collection is enabled)
+			// Pause between status and telemetry to avoid TX queue flooding (#7).
 			if target.CollectTemperature {
+				time.Sleep(InterRequestDelay)
 				ui.Verb("→ Telemetry request: %s", target.Name)
 				telem, telemErr := device.RequestTelemetry(pubKey)
 				if telemErr != nil {
@@ -396,6 +405,21 @@ func main() {
 					}
 					if pubErr := PublishTelemetry(target, telem, gpsByKey[target.PublicKey]); pubErr != nil {
 						ui.Warn("  MQTT publish failed for %s: %v", target.Name, pubErr)
+					}
+				}
+			}
+
+			// Neighbour discovery — request topology data from each repeater.
+			if pollFar {
+				time.Sleep(InterRequestDelay)
+				ui.Verb("→ Neighbours request: %s", target.Name)
+				neighbours, nErr := device.RequestNeighbours(pubKey)
+				if nErr != nil {
+					ui.Dimf("  No neighbours response from %s: %v\n", target.Name, nErr)
+				} else if len(neighbours) > 0 {
+					ui.Verb("  %s has %d neighbour(s)", target.Name, len(neighbours))
+					if pubErr := PublishNeighbours(target, neighbours); pubErr != nil {
+						ui.Warn("  MQTT publish failed for %s neighbours: %v", target.Name, pubErr)
 					}
 				}
 			}
