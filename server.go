@@ -62,11 +62,13 @@ type DeviceConfigMQTT struct {
 // RepeaterContact is a repeater seen by this monitor, sent to the server
 // so it can match monitors to nearby repeaters by hop count.
 type RepeaterContact struct {
-	Name        string `json:"name"`
-	PublicKey   string `json:"public_key"`
-	Hops        int8   `json:"hops"`
-	LastAdvert  uint32 `json:"last_advert"`
-	LastMod     uint32 `json:"last_mod"`
+	Name        string  `json:"name"`
+	PublicKey   string  `json:"public_key"`
+	Hops        int8    `json:"hops"`
+	LastAdvert  uint32  `json:"last_advert"`
+	LastMod     uint32  `json:"last_mod"`
+	Lat         float64 `json:"lat,omitempty"`
+	Lon         float64 `json:"lon,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +137,8 @@ func PostRepeaterContacts(contacts []*Contact) error {
 			Hops:       c.PathLen,
 			LastAdvert: c.LastAdvert,
 			LastMod:    c.LastMod,
+			Lat:        c.Lat,
+			Lon:        c.Lon,
 		})
 	}
 	if len(repeaters) == 0 {
