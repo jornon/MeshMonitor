@@ -120,9 +120,13 @@ func PostDeviceReport(selfInfo *SelfInfo, devInfo *DeviceInfo) error {
 // PostRepeaterContacts sends the list of repeaters visible to this monitor
 // (with hop counts) to the server. Only repeaters are included.
 func PostRepeaterContacts(contacts []*Contact) error {
+	staleThreshold := uint32(time.Now().Unix()) - 72*3600 // 72 hours
 	var repeaters []RepeaterContact
 	for _, c := range contacts {
 		if c.Type != AdvTypeRepeater {
+			continue
+		}
+		if c.LastMod > 0 && c.LastMod < staleThreshold {
 			continue
 		}
 		repeaters = append(repeaters, RepeaterContact{
