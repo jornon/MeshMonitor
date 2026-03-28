@@ -218,9 +218,10 @@ func (u *UI) PrintContacts(contacts []*Contact) {
 		u.Warn("No repeaters found.")
 		return
 	}
-	fmt.Printf("%s  %-20s  %-14s  %-5s  %s%s\n",
-		ansiDim, "Name", "Public Key", "Hops", "Location", ansiReset)
-	fmt.Printf("%s  %s%s\n", ansiDim, strings.Repeat("─", 58), ansiReset)
+	fmt.Printf("%s  %-20s  %-14s  %-5s  %-8s  %s%s\n",
+		ansiDim, "Name", "Public Key", "Hops", "Seen", "Location", ansiReset)
+	fmt.Printf("%s  %s%s\n", ansiDim, strings.Repeat("─", 68), ansiReset)
+	now := uint32(time.Now().Unix())
 	for _, c := range repeaters {
 		loc := ""
 		if c.Lat != 0 || c.Lon != 0 {
@@ -234,8 +235,12 @@ func (u *UI) PrintContacts(contacts []*Contact) {
 		if c.PathLen >= 0 {
 			hops = fmt.Sprintf("%d", c.PathLen)
 		}
-		fmt.Printf("  %-20s  %s...  %-5s  %s\n",
-			name, c.PublicKeyHex[:12], hops, loc)
+		seen := "?"
+		if c.LastMod > 0 && now > c.LastMod {
+			seen = formatAgo(now - c.LastMod)
+		}
+		fmt.Printf("  %-20s  %s...  %-5s  %-8s  %s\n",
+			name, c.PublicKeyHex[:12], hops, seen, loc)
 	}
 }
 
@@ -309,6 +314,19 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%dh%02dm%02ds", h, m, s)
 	}
 	return fmt.Sprintf("%dm%02ds", m, s)
+}
+
+func formatAgo(secs uint32) string {
+	if secs < 60 {
+		return fmt.Sprintf("%ds", secs)
+	}
+	if secs < 3600 {
+		return fmt.Sprintf("%dm", secs/60)
+	}
+	if secs < 86400 {
+		return fmt.Sprintf("%dh", secs/3600)
+	}
+	return fmt.Sprintf("%dd", secs/86400)
 }
 
 func max(a, b int) int {
