@@ -422,22 +422,27 @@ func (d *Device) RequestNeighbours(pubKey []byte) ([]NeighbourEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	ui.Dimf("[device] neighbours: %d/%d entries\n", len(entries), total)
+	ui.Dimf("[device] neighbours: %d/%d entries (raw first 64 bytes: %x)\n", len(entries), total, func() []byte {
+		if len(data) > 64 {
+			return data[:64]
+		}
+		return data
+	}())
 	return entries, nil
 }
 
 // parseNeighboursResponse parses the binary response from a NEIGHBOURS request.
-// Layout: [tag×4][neighbours_count×2 LE][results_count×2 LE][entries...]
+// Layout: [neighbours_count×2 LE][results_count×2 LE][entries...]
 // Each entry: [pubkey_prefix×prefixLen][secs_ago×4 LE][snr×1]
+// Note: the tag/sender_timestamp is already stripped by waitBinaryResponse.
 func parseNeighboursResponse(data []byte) ([]NeighbourEntry, int, error) {
-	if len(data) < 8 {
+	if len(data) < 4 {
 		return nil, 0, fmt.Errorf("neighbours response too short: %d bytes", len(data))
 	}
-	// data[0:4] = tag/sender_timestamp (skip)
-	totalCount := int(int16(binary.LittleEndian.Uint16(data[4:6])))
-	resultsCount := int(int16(binary.LittleEndian.Uint16(data[6:8])))
-	pos := 8
-	prefixLen := 4 // must match what we requested in BuildNeighboursReq
+	totalCount := int(binary.LittleEndian.Uint16(data[0:2]))
+	resultsCount := int(binary.LittleEndian.Uint16(data[2:4]))
+	pos := 4
+	prefixLen := 6 // must match what we requested in BuildNeighboursReq
 	entrySize := prefixLen + 4 + 1
 
 	var entries []NeighbourEntry

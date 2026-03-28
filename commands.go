@@ -206,7 +206,7 @@ func BuildNeighboursReq(pubKey []byte) []byte {
 	frame[35] = 255  // count: request all available
 	// offset[36:38] = 0 (first page, LE)
 	frame[38] = 0                                        // order_by: 0=newest first
-	frame[39] = 4                                        // pubkey_prefix_length: 4 bytes
+	frame[39] = 6                                        // pubkey_prefix_length: 6 bytes (matches status/telemetry prefix)
 	binary.LittleEndian.PutUint32(frame[40:44], rand32()) // random blob for uniqueness
 	return frame
 }
