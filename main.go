@@ -282,12 +282,8 @@ func main() {
 		// Build hop, GPS, and prefix lookups from contacts.
 		hopsByKey := make(map[string]int8, len(contacts))
 		gpsByKey := make(map[string]*[2]float64, len(contacts))
-		contactsByPrefix := make(map[string]string, len(contacts)) // 6-byte hex prefix → full key
 		for _, c := range contacts {
 			hopsByKey[c.PublicKeyHex] = c.PathLen
-			if len(c.PublicKeyHex) >= 12 {
-				contactsByPrefix[c.PublicKeyHex[:12]] = c.PublicKeyHex
-			}
 			if c.Lat != 0 || c.Lon != 0 {
 				gps := [2]float64{c.Lat, c.Lon}
 				gpsByKey[c.PublicKeyHex] = &gps
@@ -417,7 +413,7 @@ func main() {
 					ui.Dimf("     🗺️  No neighbours: %v\n", nErr)
 				} else if len(neighbours) > 0 {
 					ui.RepeaterNeighbours(target.Name, neighbours)
-					if pubErr := PublishNeighbours(target, neighbours, contactsByPrefix); pubErr != nil {
+					if pubErr := PublishNeighbours(target, neighbours); pubErr != nil {
 						ui.RepeaterFail("MQTT neighbours", pubErr)
 					}
 				}
