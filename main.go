@@ -330,7 +330,8 @@ func main() {
 		for _, target := range serverResp.Repeaters {
 			hops, known := hopsByKey[target.PublicKey]
 			isNear := known && hops >= 0 && hops <= nearMaxHops
-			if !isNear && !pollFar {
+			isUnknown := !known || hops < 0
+			if !isNear && !isUnknown && !pollFar {
 				ui.RepeaterSkip(target.Name, fmt.Sprintf("%d hops, next far cycle", hops))
 				continue
 			}
