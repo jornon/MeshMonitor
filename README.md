@@ -11,6 +11,10 @@ A monitoring tool for [MeshCore](https://meshcore.co) repeater networks. MeshMon
 - Server-coordinated repeater target lists
 - MQTT publishing for integration with Home Assistant, Node-RED, etc.
 - Guest login support for password-protected repeaters
+- Neighbour/topology discovery for mesh mapping
+- GPS coordinates in status and telemetry messages
+- Server-controlled log collection for remote diagnostics
+- Automatic self-update from GitHub releases
 - Colored terminal output with live countdown and spinners
 
 ## Requirements
@@ -61,20 +65,27 @@ url = https://oslofjordmesh.no  # central API endpoint
 token =                         # bearer token (required)
 
 [mqtt]
-host = mqtt.jorno.org           # MQTT broker
+host = mqtt.oslofjordmesh.no    # MQTT broker
 port = 1883
 topic_prefix = meshmonitor      # topics: <prefix>/<pubkey_prefix>/status|telemetry
 
 [timing]
 ; See meshmonitor.ini for all timing options (cycle interval, timeouts, delays)
+
+[update]
+auto_update = true              # check GitHub for new releases
+; check_interval_mins = 60      # how often to check (default: 60)
 ```
 
 ## MQTT topics
 
-MeshMonitor publishes to:
+The topic prefix is provided by the server during config sync. MeshMonitor publishes to:
 
-- `meshmonitor/<pubkey_prefix>/status` - repeater status (battery, RSSI, SNR, uptime, etc.)
-- `meshmonitor/<pubkey_prefix>/telemetry` - sensor data (temperature, humidity, voltage, etc.)
+- `<prefix>/<pubkey_prefix>/status` - repeater status (battery, RSSI, SNR, uptime, GPS, etc.)
+- `<prefix>/<pubkey_prefix>/telemetry` - sensor data (temperature, humidity, voltage, GPS, etc.)
+- `<prefix>/<pubkey_prefix>/neighbours` - mesh neighbour list with signal strengths
+- `<prefix>/companion/status` - companion device battery and info
+- `<prefix>/logs` - diagnostic log entries (when server-enabled)
 
 Telemetry is decoded from CayenneLPP format with individual fields published for easy integration.
 

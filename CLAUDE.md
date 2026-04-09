@@ -31,6 +31,8 @@ Requires Go 1.24+ and `/usr/local/go/bin/go`.
 | configfile.go       | INI config parsing, defaults, write-back             |
 | config.go           | Config template generation                           |
 | serial_detect.go    | USB port auto-detection with dialout group check     |
+| update.go           | Auto-update from GitHub releases, version comparison |
+| logbuf.go           | Thread-safe log ring buffer for remote collection    |
 | ui.go               | ANSI-colored terminal output, spinners, tables       |
 | cmd/debug/main.go   | Diagnostic tool for testing device communication     |
 
@@ -43,6 +45,7 @@ interactive setup prompts for server URL, MQTT host, and auth token. Key section
 - `[timing]` — cycle intervals, timeouts, delays
 - `[server]` — `url` (default: https://oslofjordmesh.no), `token` (required)
 - `[mqtt]` — `host`, `port`, `topic_prefix`
+- `[update]` — `auto_update`, `check_interval_mins`
 
 ## Key patterns
 
@@ -52,6 +55,8 @@ interactive setup prompts for server URL, MQTT host, and auth token. Key section
 - Failed path discoveries are tracked in `discovery_failures.json` with 24h cooldown
 - Server provides MQTT credentials and repeater target list each cycle
 - Binary request/response protocol uses tag-based matching
+- Auto-update checks GitHub releases periodically; downloads, replaces binary, and self-restarts
+- Server-controlled log collection via MQTT (`logbuf.go`)
 
 ## Dependencies
 
