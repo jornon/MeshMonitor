@@ -46,17 +46,19 @@ type RepeaterTarget struct {
 
 // DeviceConfig is returned by GET /api/v1/device/config with MQTT credentials.
 type DeviceConfig struct {
-	ID        string          `json:"id"`
-	Name      string          `json:"name"`
-	PublicKey string          `json:"public_key"`
-	MQTT      DeviceConfigMQTT `json:"mqtt"`
+	ID            string           `json:"id"`
+	Name          string           `json:"name"`
+	PublicKey     string           `json:"public_key"`
+	LogCollection bool             `json:"log_collection"`
+	MQTT          DeviceConfigMQTT `json:"mqtt"`
 }
 
 // DeviceConfigMQTT holds the MQTT credentials from the config endpoint.
 type DeviceConfigMQTT struct {
-	Host     string `json:"host"`
-	Port     int    `json:"port"`
-	Username string `json:"username"`
+	Host        string `json:"host"`
+	Port        int    `json:"port"`
+	Username    string `json:"username"`
+	TopicPrefix string `json:"topic_prefix"`
 }
 
 // RepeaterContact is a repeater seen by this monitor, sent to the server

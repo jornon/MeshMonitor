@@ -18,6 +18,9 @@ var (
 // mqttUsername is set at startup from the device config endpoint.
 var mqttUsername string
 
+// logCollectionEnabled is set from the server config response.
+var logCollectionEnabled bool
+
 // connectMQTT connects to the broker, retrying on each call if a previous attempt failed.
 func connectMQTT() error {
 	mqttMu.Lock()
@@ -50,6 +53,7 @@ func connectMQTT() error {
 	}
 	mqttReady = true
 	ui.Verb("MQTT connected to %s as %s", broker, mqttUsername)
+	logBuf.Log("info", "mqtt", "Connected to %s", broker)
 	return nil
 }
 
@@ -166,11 +170,13 @@ func publish(topic string, payload any) error {
 	ok := token.WaitTimeout(5 * time.Second)
 	if token.Error() != nil {
 		ui.Dimf("     📤 ❌ %s: %v\n", topic, token.Error())
+		logBuf.Log("error", "mqtt", "Publish failed %s: %v", topic, token.Error())
 		resetMQTT() // force reconnect on next publish
 		return fmt.Errorf("mqtt publish: %w", token.Error())
 	}
 	if !ok {
 		ui.Dimf("     📤 ❌ %s: timeout\n", topic)
+		logBuf.Log("error", "mqtt", "Publish timeout: %s", topic)
 		resetMQTT() // force reconnect on next publish
 		return fmt.Errorf("mqtt publish timeout for %s", topic)
 	}
@@ -189,4 +195,42 @@ func resetMQTT() {
 	}
 	mqttReady = false
 	ui.Warn("MQTT connection reset — will reconnect on next publish")
+}
+
+// PublishLogs publishes a batch of diagnostic log entries.
+func PublishLogs(entries []LogEntry) error {
+	topic := fmt.Sprintf("%s/logs", cfg.MQTTTopicPrefix)
+	payload := map[string]any{
+		"logs": entries,
+	}
+	return publish(topic, payload)
+}
+
+// startLogFlusher runs a background goroutine that publishes buffered log
+// entries every 30 seconds when log collection is enabled.
+func startLogFlusher(stopCh <-chan struct{}) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if !logCollectionEnabled || !mqttReady {
+				continue
+			}
+			entries := logBuf.Drain()
+			if len(entries) == 0 {
+				continue
+			}
+			if err := PublishLogs(entries); err != nil {
+				ui.Dimf("[mqtt] log publish failed: %v\n", err)
+			}
+		case <-stopCh:
+			if logCollectionEnabled {
+				if entries := logBuf.Drain(); len(entries) > 0 {
+					PublishLogs(entries)
+				}
+			}
+			return
+		}
+	}
 }

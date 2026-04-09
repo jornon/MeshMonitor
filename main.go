@@ -190,10 +190,25 @@ func main() {
 	devCfg, err := FetchDeviceConfig()
 	if err != nil {
 		ui.Warn("Could not fetch device config: %v", err)
-	} else if devCfg.MQTT.Username != "" {
-		mqttUsername = devCfg.MQTT.Username
-		ui.Verb("MQTT username: %s", mqttUsername)
+	} else {
+		if devCfg.MQTT.Username != "" {
+			mqttUsername = devCfg.MQTT.Username
+			ui.Verb("MQTT username: %s", mqttUsername)
+		}
+		if devCfg.MQTT.TopicPrefix != "" {
+			cfg.MQTTTopicPrefix = devCfg.MQTT.TopicPrefix
+			ui.Verb("MQTT topic prefix (from server): %s", cfg.MQTTTopicPrefix)
+		}
+		if devCfg.LogCollection {
+			logCollectionEnabled = true
+			ui.Verb("Log collection enabled")
+		}
 	}
+
+	// Start background log flusher (publishes every 30s when enabled).
+	logStopCh := make(chan struct{})
+	go startLogFlusher(logStopCh)
+	defer close(logStopCh)
 
 	// -------------------------------------------------------------------------
 	// Main monitoring loop
@@ -218,6 +233,12 @@ func main() {
 		} else {
 			ui.Info("Cycle %d", cycleNum)
 		}
+		logBuf.Log("info", "sys", "Cycle %d started (%s)", cycleNum, func() string {
+			if pollFar {
+				return "near+far"
+			}
+			return "near"
+		}())
 
 		// -------------------------------------------------------------------
 		// Re-initialise device each cycle
@@ -225,6 +246,7 @@ func main() {
 		ui.Verb("Initialising device...")
 		selfInfo, err = device.Init()
 		if err != nil {
+			logBuf.Log("error", "radio", "Device init failed: %v", err)
 			ui.Error("Device init failed: %v", err)
 			ui.Warn("Retrying in 10 seconds...")
 			if !sleepOrExit(10*time.Second, sigCh) {
@@ -232,6 +254,8 @@ func main() {
 			}
 			continue
 		}
+
+		logBuf.Log("info", "radio", "Device initialised: %s", selfInfo.Name)
 
 		// Query and publish companion node battery (#6).
 		if battMV, battErr := device.GetBattAndStorage(); battErr == nil {

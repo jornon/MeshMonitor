@@ -37,6 +37,7 @@ func (u *UI) Banner() {
 
 func (u *UI) Info(format string, args ...any) {
 	fmt.Printf("  💬 %s\n", fmt.Sprintf(format, args...))
+	logBuf.Log("info", "sys", format, args...)
 }
 
 func (u *UI) Success(format string, args ...any) {
@@ -45,10 +46,12 @@ func (u *UI) Success(format string, args ...any) {
 
 func (u *UI) Warn(format string, args ...any) {
 	fmt.Printf("  %s⚠️  %s%s\n", ansiYellow, fmt.Sprintf(format, args...), ansiReset)
+	logBuf.Log("warn", "sys", format, args...)
 }
 
 func (u *UI) Error(format string, args ...any) {
 	fmt.Printf("  %s❌ %s%s\n", ansiRed, fmt.Sprintf(format, args...), ansiReset)
+	logBuf.Log("error", "sys", format, args...)
 }
 
 func (u *UI) Dimf(format string, args ...any) {
