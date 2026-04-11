@@ -327,6 +327,16 @@ func main() {
 			ui.PrintRepeaterTargets(serverResp.Repeaters)
 		}
 
+		// Log assigned repeaters to remote log.
+		for i, t := range serverResp.Repeaters {
+			hops := hopsByKey[t.PublicKey]
+			hopLabel := "?"
+			if _, known := hopsByKey[t.PublicKey]; known && hops >= 0 {
+				hopLabel = fmt.Sprintf("%d", hops)
+			}
+			logBuf.Log("info", "cycle", "Assigned [%d/%d] %s (%s hops)", i+1, len(serverResp.Repeaters), t.Name, hopLabel)
+		}
+
 		// -------------------------------------------------------------------
 		// Poll each repeater for status and telemetry
 		//
@@ -363,6 +373,9 @@ func main() {
 			ui.Verb("Polling %d repeater(s), interval %s between each", len(pollTargets), interDelay.Truncate(time.Second))
 		}
 
+		// Cycle statistics for summary log.
+		var cycleProbed, cycleStatusOK, cycleTelemOK, cycleMqttOK, cycleMqttFail int
+
 		for i, target := range pollTargets {
 			pubKey, decErr := hex.DecodeString(target.PublicKey)
 			if decErr != nil || len(pubKey) != 32 {
@@ -378,6 +391,13 @@ func main() {
 
 			// ── Repeater header ──
 			ui.RepeaterHeader(i+1, len(pollTargets), target.Name, hopLabel, target.GuestPassword != "")
+
+			cycleProbed++
+			rptStatusOK := false
+			rptTelemOK := false
+			rptMqttStatus := false
+			rptMqttTelem := false
+			rptMqttNeigh := false
 
 			// Login if guest password is set for this repeater.
 			needsLogout := false
@@ -401,9 +421,13 @@ func main() {
 			if statusErr != nil {
 				ui.RepeaterFail("Status", statusErr)
 			} else if status != nil {
+				rptStatusOK = true
+				cycleStatusOK++
 				ui.RepeaterStatus(target.Name, status)
 				if pubErr := PublishStatus(target, status, gpsByKey[target.PublicKey]); pubErr != nil {
 					ui.RepeaterFail("MQTT status", pubErr)
+				} else {
+					rptMqttStatus = true
 				}
 			}
 
@@ -414,9 +438,13 @@ func main() {
 				if telemErr != nil {
 					ui.RepeaterFail("Telemetry", telemErr)
 				} else {
+					rptTelemOK = true
+					cycleTelemOK++
 					ui.RepeaterTelemetry(target.Name, telem)
 					if pubErr := PublishTelemetry(target, telem, gpsByKey[target.PublicKey]); pubErr != nil {
 						ui.RepeaterFail("MQTT telemetry", pubErr)
+					} else {
+						rptMqttTelem = true
 					}
 				}
 			}
@@ -431,8 +459,39 @@ func main() {
 					ui.RepeaterNeighbours(target.Name, neighbours)
 					if pubErr := PublishNeighbours(target, neighbours); pubErr != nil {
 						ui.RepeaterFail("MQTT neighbours", pubErr)
+					} else {
+						rptMqttNeigh = true
 					}
 				}
+			}
+
+			// Per-repeater summary log.
+			mqttParts := ""
+			if rptMqttStatus {
+				mqttParts += "status"
+			}
+			if rptMqttTelem {
+				if mqttParts != "" {
+					mqttParts += "+"
+				}
+				mqttParts += "telemetry"
+			}
+			if rptMqttNeigh {
+				if mqttParts != "" {
+					mqttParts += "+"
+				}
+				mqttParts += "neighbours"
+			}
+			if rptStatusOK || rptTelemOK {
+				if mqttParts != "" {
+					cycleMqttOK++
+					logBuf.Log("info", "poll", "%s: status=%v telem=%v mqtt=[%s]", target.Name, rptStatusOK, rptTelemOK, mqttParts)
+				} else {
+					cycleMqttFail++
+					logBuf.Log("warn", "poll", "%s: status=%v telem=%v mqtt=FAIL", target.Name, rptStatusOK, rptTelemOK)
+				}
+			} else {
+				logBuf.Log("warn", "poll", "%s: no data (status=%v telem=%v)", target.Name, rptStatusOK, rptTelemOK)
 			}
 
 			// Logout if we logged in.
@@ -448,6 +507,10 @@ func main() {
 				}
 			}
 		}
+
+		// Cycle summary log.
+		logBuf.Log("info", "cycle", "Cycle %d done: probed=%d status_ok=%d telem_ok=%d mqtt_ok=%d mqtt_fail=%d",
+			cycleNum, cycleProbed, cycleStatusOK, cycleTelemOK, cycleMqttOK, cycleMqttFail)
 		ui.Verb("Cycle %d complete.", cycleNum)
 
 		// -------------------------------------------------------------------
