@@ -61,6 +61,12 @@ type DeviceConfigMQTT struct {
 	TopicPrefix string `json:"topic_prefix"`
 }
 
+// CollectResult reports whether data was successfully collected from a repeater.
+type CollectResult struct {
+	PublicKey string `json:"public_key"`
+	Success   bool   `json:"success"`
+}
+
 // RepeaterContact is a repeater seen by this monitor, sent to the server
 // so it can match monitors to nearby repeaters by hop count.
 type RepeaterContact struct {
@@ -167,6 +173,42 @@ func PostRepeaterContacts(contacts []*Contact) error {
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("PUT repeater contacts: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("server returned %s", resp.Status)
+	}
+	return nil
+}
+
+// PostCollectResults reports per-repeater collection outcomes to the server
+// via PUT /api/v1/device/collect-results so it can reassign unreachable repeaters.
+func PostCollectResults(results []CollectResult) error {
+	if len(results) == 0 {
+		return nil
+	}
+
+	wrapper := struct {
+		Results []CollectResult `json:"results"`
+	}{Results: results}
+	body, err := json.Marshal(wrapper)
+	if err != nil {
+		return fmt.Errorf("marshal collect results: %w", err)
+	}
+
+	url := strings.TrimRight(cfg.ServerURL, "/") + "/api/v1/device/collect-results"
+	req, err := http.NewRequest(http.MethodPut, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+cfg.ServerToken)
+
+	ui.Dimf("[server] PUT %s (%d results)\n", url, len(results))
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("PUT collect results: %w", err)
 	}
 	defer resp.Body.Close()
 

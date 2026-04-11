@@ -375,6 +375,7 @@ func main() {
 
 		// Cycle statistics for summary log.
 		var cycleProbed, cycleStatusOK, cycleTelemOK, cycleMqttOK, cycleMqttFail int
+		var collectResults []CollectResult
 
 		for i, target := range pollTargets {
 			pubKey, decErr := hex.DecodeString(target.PublicKey)
@@ -494,6 +495,12 @@ func main() {
 				logBuf.Log("warn", "poll", "%s: no data (status=%v telem=%v)", target.Name, rptStatusOK, rptTelemOK)
 			}
 
+			// Record collection result for server reporting.
+			collectResults = append(collectResults, CollectResult{
+				PublicKey: target.PublicKey,
+				Success:   rptMqttStatus || rptMqttTelem,
+			})
+
 			// Logout if we logged in.
 			if needsLogout {
 				device.Logout(pubKey)
@@ -512,6 +519,11 @@ func main() {
 		logBuf.Log("info", "cycle", "Cycle %d done: probed=%d status_ok=%d telem_ok=%d mqtt_ok=%d mqtt_fail=%d",
 			cycleNum, cycleProbed, cycleStatusOK, cycleTelemOK, cycleMqttOK, cycleMqttFail)
 		ui.Verb("Cycle %d complete.", cycleNum)
+
+		// Report collection results to server for reassignment decisions.
+		if err := PostCollectResults(collectResults); err != nil {
+			ui.Warn("Could not report collect results: %v", err)
+		}
 
 		// -------------------------------------------------------------------
 		// Wait before the next cycle — apply pending updates if available
