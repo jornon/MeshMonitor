@@ -182,28 +182,7 @@ func main() {
 	if ui.Verbose {
 		ui.Section("Registering with server")
 	}
-	if err := PostDeviceReport(selfInfo, device.DevInfo); err != nil {
-		ui.Warn("Device report: %v", err)
-	}
-
-	// Fetch device config for MQTT credentials.
-	devCfg, err := FetchDeviceConfig()
-	if err != nil {
-		ui.Warn("Could not fetch device config: %v", err)
-	} else {
-		if devCfg.MQTT.Username != "" {
-			mqttUsername = devCfg.MQTT.Username
-			ui.Verb("MQTT username: %s", mqttUsername)
-		}
-		if devCfg.MQTT.TopicPrefix != "" {
-			cfg.MQTTTopicPrefix = devCfg.MQTT.TopicPrefix
-			ui.Verb("MQTT topic prefix (from server): %s", cfg.MQTTTopicPrefix)
-		}
-		if devCfg.LogCollection {
-			logCollectionEnabled = true
-			ui.Verb("Log collection enabled")
-		}
-	}
+	registerWithServer(selfInfo, device.DevInfo)
 
 	// Start background log flusher (publishes every 30s when enabled).
 	logStopCh := make(chan struct{})
@@ -239,6 +218,19 @@ func main() {
 			}
 			return "near"
 		}())
+
+		// -------------------------------------------------------------------
+		// Retry server config if MQTT credentials are still missing
+		// -------------------------------------------------------------------
+		if mqttUsername == "" {
+			ui.Verb("MQTT credentials missing — retrying server config fetch...")
+			if devCfg, err := FetchDeviceConfig(); err != nil {
+				ui.Warn("Config retry failed: %v", err)
+			} else {
+				applyDeviceConfig(devCfg)
+				resetMQTT() // force reconnect with new credentials
+			}
+		}
 
 		// -------------------------------------------------------------------
 		// Re-initialise device each cycle
@@ -479,6 +471,54 @@ func main() {
 			ui.Info("Shutting down.")
 			return
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Server registration with retry
+// ---------------------------------------------------------------------------
+
+// registerWithServer posts the device report and fetches MQTT credentials,
+// retrying up to 3 times with backoff on transient failures.
+func registerWithServer(selfInfo *SelfInfo, devInfo *DeviceInfo) {
+	const maxRetries = 3
+	backoff := 5 * time.Second
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		if err := PostDeviceReport(selfInfo, devInfo); err != nil {
+			ui.Warn("Device report: %v", err)
+		}
+
+		devCfg, err := FetchDeviceConfig()
+		if err != nil {
+			ui.Warn("Could not fetch device config: %v", err)
+			if attempt < maxRetries {
+				ui.Verb("Retrying server registration in %s (attempt %d/%d)...", backoff, attempt, maxRetries)
+				time.Sleep(backoff)
+				backoff *= 2
+				continue
+			}
+			ui.Warn("Server registration failed after %d attempts — will retry next cycle", maxRetries)
+			return
+		}
+		applyDeviceConfig(devCfg)
+		return
+	}
+}
+
+// applyDeviceConfig applies MQTT credentials and settings from the server config response.
+func applyDeviceConfig(devCfg *DeviceConfig) {
+	if devCfg.MQTT.Username != "" {
+		mqttUsername = devCfg.MQTT.Username
+		ui.Verb("MQTT username: %s", mqttUsername)
+	}
+	if devCfg.MQTT.TopicPrefix != "" {
+		cfg.MQTTTopicPrefix = devCfg.MQTT.TopicPrefix
+		ui.Verb("MQTT topic prefix (from server): %s", cfg.MQTTTopicPrefix)
+	}
+	if devCfg.LogCollection {
+		logCollectionEnabled = true
+		ui.Verb("Log collection enabled")
 	}
 }
 
